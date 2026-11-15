@@ -208,3 +208,26 @@ func TestTransitionTableIsPinned(t *testing.T) {
 		t.Errorf("Settled = %v: a blocked task must keep its run open", Settled)
 	}
 }
+
+// A provider whose only attempt is still running has outcome NULL; sum(outcome='done') over
+// NULLs is NULL, and the report failed to scan it (found live: `swarm report` on a box with
+// one running task).
+func TestReportWithOnlyARunningAttempt(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	id := seed(t, d, "running")
+	if _, err := d.StartAttempt(ctx, id, "claude-x", "m", "local", "a.log"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := d.Report(ctx, 0)
+	if err != nil {
+		t.Fatalf("report with a running attempt: %v", err)
+	}
+	if len(r.Providers) != 1 || r.Providers[0].Attempts != 1 || r.Providers[0].Done != 0 {
+		t.Fatalf("providers = %+v, want one provider with 1 attempt, 0 done", r.Providers)
+	}
+}

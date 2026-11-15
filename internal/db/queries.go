@@ -574,9 +574,10 @@ type BlockedTask struct {
 
 func (d *DB) Report(ctx context.Context, since int64) (Report, error) {
 	r := Report{Since: since, Signals: map[string]int{}}
+	// IS, not =: a running attempt has outcome NULL, and sum() over NULLs alone is NULL.
 	rows, err := d.QueryContext(ctx, `SELECT provider, count(*),
-		sum(outcome='done'), sum(outcome='gate_fail'), sum(outcome='timeout'), sum(outcome='crash'),
-		sum(outcome='blocked'), coalesce(sum(cost_usd),0)
+		sum(outcome IS 'done'), sum(outcome IS 'gate_fail'), sum(outcome IS 'timeout'), sum(outcome IS 'crash'),
+		sum(outcome IS 'blocked'), coalesce(sum(cost_usd),0)
 		FROM attempts WHERE started_at >= ? GROUP BY provider ORDER BY provider`, since)
 	if err != nil {
 		return r, err
