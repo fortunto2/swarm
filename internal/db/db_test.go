@@ -231,3 +231,38 @@ func TestReportWithOnlyARunningAttempt(t *testing.T) {
 		t.Fatalf("providers = %+v, want one provider with 1 attempt, 0 done", r.Providers)
 	}
 }
+
+// The list showed the attempts counter, which a retry zeroes: T101 took four goes and read
+// "0 att" (found live, 2026-11). Tries counts the attempts that started.
+func TestRecentTasksCountsTriesAcrossARetry(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	id := seed(t, d, "merged")
+	other := seed(t, d, "ready")
+	for range 2 {
+		if _, err := d.StartAttempt(ctx, id, "claude-x", "m", "local", "a.log"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.ExecContext(ctx, `UPDATE tasks SET attempts=0 WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := d.RecentTasks(ctx, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]TaskRow{}
+	for _, r := range rows {
+		got[r.ID] = r
+	}
+	if got[id].Tries != 2 || got[id].Attempts != 0 {
+		t.Fatalf("task with two tries after a retry: %+v, want tries 2, attempts 0", got[id])
+	}
+	if got[other].Tries != 0 {
+		t.Fatalf("another task's attempts counted: %+v", got[other])
+	}
+}

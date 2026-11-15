@@ -53,7 +53,8 @@ func taskListCmd() *cobra.Command {
 					if where == "" {
 						where = "-"
 					}
-					line := fmt.Sprintf("T%-4d %-10s %-16s %-8s %d att  %s", r.ID, r.Status, r.Repo, where, r.Attempts, r.Title)
+					// tries, not the attempts counter: a retry zeroes that, so a task that took four goes read 0
+					line := fmt.Sprintf("T%-4d %-10s %-16s %-8s %d tries  %s", r.ID, r.Status, r.Repo, where, r.Tries, r.Title)
 					if r.RunsOn != "" {
 						line += "  [runs_on " + r.RunsOn + "]"
 					}

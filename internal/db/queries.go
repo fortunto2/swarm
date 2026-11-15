@@ -262,7 +262,8 @@ type TaskRow struct {
 	Repo     string `json:"repo"`
 	Title    string `json:"title"`
 	Status   string `json:"status"`
-	Attempts int    `json:"attempts"`
+	Attempts int    `json:"attempts"` // failed attempts toward max_attempts; a retry resets it
+	Tries    int    `json:"tries"`    // attempts started, ever: what "how many goes did it take" means
 	Provider string `json:"provider,omitempty"`
 	Node     string `json:"node,omitempty"`    // where its last attempt ran
 	RunsOn   string `json:"runs_on,omitempty"` // labels it asked for, comma-separated
@@ -270,7 +271,8 @@ type TaskRow struct {
 
 // RecentTasks: newest first, at most limit, optionally one status.
 func (d *DB) RecentTasks(ctx context.Context, status string, limit int) ([]TaskRow, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id, run_id, repo, title, status, attempts, coalesce(provider,''),
+	rows, err := d.QueryContext(ctx, `SELECT id, run_id, repo, title, status, attempts,
+		(SELECT count(*) FROM attempts a WHERE a.task_id = tasks.id), coalesce(provider,''),
 		coalesce(node,''), coalesce(runs_on,'')
 		FROM tasks WHERE ?='' OR status=? ORDER BY id DESC LIMIT ?`, status, status, limit)
 	if err != nil {
@@ -280,7 +282,7 @@ func (d *DB) RecentTasks(ctx context.Context, status string, limit int) ([]TaskR
 	var out []TaskRow
 	for rows.Next() {
 		var r TaskRow
-		if err := rows.Scan(&r.ID, &r.Run, &r.Repo, &r.Title, &r.Status, &r.Attempts, &r.Provider, &r.Node, &r.RunsOn); err != nil {
+		if err := rows.Scan(&r.ID, &r.Run, &r.Repo, &r.Title, &r.Status, &r.Attempts, &r.Tries, &r.Provider, &r.Node, &r.RunsOn); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
