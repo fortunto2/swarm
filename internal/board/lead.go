@@ -165,7 +165,7 @@ func (s *Service) TaskNotes(ctx context.Context, tok string, task int64) ([]db.N
 
 // RetryTask gives a blocked task (or one that needed a person) a fresh start: counters reset,
 // back to ready. Whoever retries has read why it stopped; the notes stay.
-func (s *Service) RetryTask(ctx context.Context, tok string, task int64) (any, error) {
+func (s *Service) RetryTask(ctx context.Context, tok string, task int64, note string) (any, error) {
 	id, err := s.lead(tok)
 	if err != nil {
 		return nil, err
@@ -181,6 +181,11 @@ func (s *Service) RetryTask(ctx context.Context, tok string, task int64) (any, e
 	s.DB.Event(ctx, id.Actor(), task, "retried", nil) // per-retry counters (rebase conflicts) start here
 	if t, err := s.DB.GetTask(ctx, task); err == nil {
 		_ = s.DB.ReopenRun(ctx, t.RunID)
+		// kind review: the next attempt's prompt carries the newest review notes (found live: a
+		// worker's question was answered by hand in its worktree and the retry could not say so)
+		if note = strings.TrimSpace(note); note != "" {
+			_ = s.DB.Note(ctx, t.RunID, task, id.Actor(), "review", "answer from "+id.Actor()+": "+s.clean(note))
+		}
 	}
 	s.signal(task)
 	return map[string]any{"task": task, "status": "ready"}, nil

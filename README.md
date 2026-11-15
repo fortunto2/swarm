@@ -91,8 +91,9 @@ Text swarm stores or forwards outside Claude (gate output, worker notes and ques
 notifications) goes through the `redact` filter first; if the filter fails, the text is
 withheld rather than forwarded.
 
-Blocked tasks wait for a person: `swarm task retry <id>` (counters reset) or
-`swarm task cancel <id>` (a running worker is stopped), or the same through MCP.
+Blocked tasks wait for a person: `swarm task retry <id> [--note "<answer>"]` (counters
+reset; the note reaches the next attempt's prompt) or `swarm task cancel <id>` (a running
+worker is stopped), or the same through MCP.
 
 ## Dependencies
 

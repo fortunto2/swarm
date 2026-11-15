@@ -118,6 +118,9 @@ The most common question is a file outside the task's claims: a test that assert
 behaviour the task changes. When the worker is right, widen the task instead of rewriting
 it: `swarm task claim <id> <path>` (MCP `swarm_claim_files`), then `swarm task retry <id>`.
 Name such tests in `--files` up front next time: the spec changes them, so the task owns them.
+When you answered its question by acting (ran the git command it asked for, fixed a file it
+could not touch), say so: `swarm task retry <id> --note "<what you did>"`; the next attempt
+reads it instead of guessing from the state.
 Attempt logs: `$SWARM_PROFILE/state/attempts/<provider>-T<id>-<n>/log.jsonl`.
 
 ## Rules

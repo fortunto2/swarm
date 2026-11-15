@@ -2,8 +2,10 @@ package board
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,5 +151,45 @@ func TestClaimFilesWidensATaskNotAFinishedOne(t *testing.T) {
 	worker := s.Issue(Identity{TaskID: id, Role: "worker"})
 	if _, err := s.Do(ctx, "swarm_claim_files", worker, []byte(`{"task_id":1,"files":["x"]}`)); AsError(err).Code != "forbidden" {
 		t.Fatalf("a worker widened its own claims: %v", err)
+	}
+}
+
+// A worker blocked on a question was answered by doing what it asked in its worktree; the
+// retry could not say so, and the next attempt had to guess from the git state (found live).
+// The note reaches the next attempt as a review note, which its prompt carries.
+func TestRetryNoteReachesTheNextAttempt(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	s := &Service{DB: d}
+	lead := s.Issue(Identity{Role: "lead"})
+	run, _ := d.CreateRun(ctx, "x", "", "base")
+	id, _ := d.AddTask(ctx, db.NewTask{RunID: run, Repo: "app", Title: "T", Spec: "s", Acceptance: "a", Tier: "B", Files: []string{"a.go"}})
+	block := func() {
+		t.Helper()
+		if err := d.Move(ctx, "t", id, []db.Status{db.Ready}, db.Running, db.Patch{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Move(ctx, "t", id, []db.Status{db.Running}, db.Blocked, db.Patch{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	block()
+	if _, err := s.Do(ctx, "swarm_retry_task", lead, []byte(fmt.Sprintf(`{"task_id":%d,"note":"  done: your tree is on the new base  "}`, id))); err != nil {
+		t.Fatal(err)
+	}
+	notes, _ := d.Notes(ctx, id, "review", 4)
+	if len(notes) != 1 || !strings.Contains(notes[0].Body, "done: your tree is on the new base") {
+		t.Fatalf("review notes after a retry with a note: %+v", notes)
+	}
+	block()
+	if _, err := s.RetryTask(ctx, lead, id, " "); err != nil {
+		t.Fatal(err)
+	}
+	if notes, _ := d.Notes(ctx, id, "review", 4); len(notes) != 1 {
+		t.Fatalf("a blank note was stored: %+v", notes)
 	}
 }

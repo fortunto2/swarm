@@ -72,6 +72,11 @@ type notesIn struct {
 	TaskID int64 `json:"task_id"`
 }
 
+type retryIn struct {
+	TaskID int64  `json:"task_id"`
+	Note   string `json:"note,omitempty" jsonschema:"the answer to the worker's question, or what changed since it stopped; the next attempt reads it"`
+}
+
 var ok = map[string]bool{"ok": true}
 
 var ops = []op{
@@ -101,9 +106,9 @@ var ops = []op{
 		func(s *Service, ctx context.Context, tok string, in listIn) (any, error) {
 			return s.ListTasks(ctx, tok, in.Status)
 		}),
-	def("swarm_retry_task", "lead", "Give a blocked task a fresh start (counters reset). Read its notes first: the reason it stopped is usually in the task, not the worker.",
-		func(s *Service, ctx context.Context, tok string, in notesIn) (any, error) {
-			return s.RetryTask(ctx, tok, in.TaskID)
+	def("swarm_retry_task", "lead", "Give a blocked task a fresh start (counters reset). Read its notes first: the reason it stopped is usually in the task, not the worker. A note (the answer to its question) reaches the next attempt.",
+		func(s *Service, ctx context.Context, tok string, in retryIn) (any, error) {
+			return s.RetryTask(ctx, tok, in.TaskID, in.Note)
 		}),
 	def("swarm_cancel_task", "lead", "Cancel a task that will not be done; a running worker is stopped.",
 		func(s *Service, ctx context.Context, tok string, in notesIn) (any, error) {
