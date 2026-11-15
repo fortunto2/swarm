@@ -93,6 +93,25 @@ same static checks and gate commands the daemon will run.
 the example starts with `#:schema ./swarm.schema.json`, which TOML editors use for
 completion and validation.
 
+### The provider registry
+
+Each `[providers.<id>]` is one subscription. Declared there: kind, family, slots, tiers,
+`roles` (worker, reviewer, lead), `priority` (lower first for a tier) and `budget_usd_day`.
+Live in the profile's database: whether it is ok, cooling until a time, or disabled, and why;
+spend comes from each attempt's own cost report. A provider over its daily budget pauses
+until the next UTC midnight; one that cannot log in is disabled until the daemon restarts.
+
+```
+$ swarm providers
+PROVIDER       KIND    FAMILY     ROLES                  PRIO   SLOTS STATE     TODAY
+kimi           claude  moonshot   worker                    1   2/4   ok        $3.10 of $20.00
+codex          codex   openai     worker,reviewer           2   1/3   ok        $0.00 no cap
+claude-a       claude  anthropic  lead,worker,reviewer      3   0/3   cooling until 2026-11-16T00:00:00Z $41.20 of $40.00
+```
+
+Workers are not a registry of their own: a worker lives one attempt, a row in `attempts`.
+Machines are `[nodes.<id>]`: which accounts are logged in there and how many workers fit.
+
 Secrets are never values in the file: a token-looking key must hold `secret:<name>`
 (resolved by `secret_cmd`) or `env:<VAR>`, and `swarm check` refuses anything else.
 

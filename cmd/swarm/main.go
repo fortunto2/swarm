@@ -8,11 +8,13 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
+	"github.com/fortunto2/swarm/internal/dispatch"
 )
 
 var profileFlag string
@@ -114,6 +116,44 @@ func main() {
 			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(b))
 			return err
+		},
+	})
+	root.AddCommand(&cobra.Command{
+		Use:   "providers",
+		Short: "The provider registry: roles, priority, slots, state, spend today against budget",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := load()
+			if err != nil {
+				return err
+			}
+			d, err := db.Open(c.DBPath())
+			if err != nil {
+				return err
+			}
+			defer d.Close()
+			views, err := dispatch.ProviderViews(context.Background(), c, d)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "%-14s %-7s %-10s %-22s %4s %7s %-9s %s\n", "PROVIDER", "KIND", "FAMILY", "ROLES", "PRIO", "SLOTS", "STATE", "TODAY")
+			for _, v := range views {
+				budget := "no cap"
+				if v.BudgetDay > 0 {
+					budget = fmt.Sprintf("of $%.2f", v.BudgetDay)
+				}
+				state := v.State
+				if v.Until != "" {
+					state += " until " + v.Until
+				}
+				fmt.Fprintf(out, "%-14s %-7s %-10s %-22s %4d %3d/%-3d %-9s $%.2f %s\n", v.ID, v.Kind, v.Family,
+					strings.Join(v.Roles, ","), v.Priority, v.Running, v.Slots, state, v.SpentToday, budget)
+				if v.Why != "" {
+					fmt.Fprintf(out, "%-14s %s\n", "", v.Why)
+				}
+			}
+			return nil
 		},
 	})
 	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd())

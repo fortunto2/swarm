@@ -9,9 +9,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -64,6 +66,7 @@ type Daemon struct {
 	results  chan gateResult
 	wake     chan int64
 	bg       sync.WaitGroup // after-merge hooks: bounded by their timeout, awaited on exit
+	reg      registry       // provider states and spend, refreshed each schedule pass
 }
 
 func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
@@ -110,6 +113,14 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	d.Board.IssueFixed(op, board.Identity{Role: "lead"})
 	d.Board.Locate = d.locate
 	d.Board.Repo = d.repo
+	d.Board.Providers = func(ctx context.Context) (any, error) { return ProviderViews(ctx, d.Cfg, d.DB) }
+	back, err := d.DB.EnsureProviders(ctx, slices.Sorted(maps.Keys(d.Cfg.Providers)))
+	if err != nil {
+		return err
+	}
+	for _, id := range back {
+		d.DB.Event(ctx, "swarmd", 0, "provider_reenabled", map[string]string{"provider": id, "why": "daemon restarted"})
+	}
 	if err := d.reconcile(ctx); err != nil {
 		return err
 	}
@@ -176,12 +187,23 @@ func (d *Daemon) idle(ctx context.Context) bool {
 	if err := d.promote(ctx); err != nil { // a merge this tick may have freed a draft
 		return false
 	}
-	statuses := []db.Status{db.Running, db.Verifying, db.Review, db.Merging}
-	if len(d.adapters) > 0 { // ready work with no provider left to run it waits for a person
-		statuses = append(statuses, db.Ready)
+	busy, err := d.DB.TasksIn(ctx, db.Running, db.Verifying, db.Review, db.Merging)
+	if err != nil || len(busy) > 0 {
+		return false
 	}
-	ts, err := d.DB.TasksIn(ctx, statuses...)
-	return err == nil && len(ts) == 0
+	// Ready work counts only if some provider could take it now. With every provider for
+	// its tier cooling, disabled or absent, it waits for time or a person, not for us.
+	ready, err := d.DB.TasksIn(ctx, db.Ready)
+	if err != nil {
+		return false
+	}
+	_ = d.refreshRegistry(ctx)
+	for _, t := range ready {
+		if len(d.eligible(t.Tier)) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *Daemon) closeRuns(ctx context.Context) error {

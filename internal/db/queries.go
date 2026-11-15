@@ -324,3 +324,98 @@ func (d *DB) ClaimsInFlight(ctx context.Context) (map[int64][]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// ProviderState: the live half of the provider registry (the declared half is swarm.toml).
+type ProviderState struct {
+	State        string // ok | cooling | disabled
+	CoolingUntil int64
+	LastError    string
+}
+
+// EnsureProviders registers every declared provider. A provider disabled before this start
+// is given another chance: whoever restarts the daemon is the signal it may work again.
+// Returns the ids re-enabled.
+func (d *DB) EnsureProviders(ctx context.Context, ids []string) ([]string, error) {
+	var back []string
+	for _, id := range ids {
+		if _, err := d.ExecContext(ctx, `INSERT OR IGNORE INTO providers(id, state) VALUES(?, 'ok')`, id); err != nil {
+			return nil, err
+		}
+		r, err := d.ExecContext(ctx, `UPDATE providers SET state='ok', cooling_until=NULL WHERE id=? AND state='disabled'`, id)
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := r.RowsAffected(); n > 0 {
+			back = append(back, id)
+		}
+	}
+	return back, nil
+}
+
+func (d *DB) ProviderStates(ctx context.Context) (map[string]ProviderState, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id, state, coalesce(cooling_until,0), coalesce(last_error,'') FROM providers`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]ProviderState{}
+	for rows.Next() {
+		var id string
+		var s ProviderState
+		if err := rows.Scan(&id, &s.State, &s.CoolingUntil, &s.LastError); err != nil {
+			return nil, err
+		}
+		out[id] = s
+	}
+	return out, rows.Err()
+}
+
+// CoolProvider pauses a provider until a time (a spent budget, later a rate limit).
+func (d *DB) CoolProvider(ctx context.Context, id string, until int64, why string) error {
+	_, err := d.ExecContext(ctx, `INSERT INTO providers(id, state, cooling_until, last_error) VALUES(?, 'cooling', ?, ?)
+		ON CONFLICT(id) DO UPDATE SET state='cooling', cooling_until=excluded.cooling_until, last_error=excluded.last_error`, id, until, why)
+	return err
+}
+
+// SpentSinceByProvider: dollars per provider for attempts started at or after a time.
+func (d *DB) SpentSinceByProvider(ctx context.Context, since int64) (map[string]float64, error) {
+	rows, err := d.QueryContext(ctx, `SELECT provider, coalesce(sum(cost_usd),0) FROM attempts WHERE started_at >= ? GROUP BY provider`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var id string
+		var v float64
+		if err := rows.Scan(&id, &v); err != nil {
+			return nil, err
+		}
+		out[id] = v
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) RunningByProvider(ctx context.Context) (map[string]int, error) {
+	rows, err := d.QueryContext(ctx, `SELECT provider, count(*) FROM tasks WHERE status='running' AND provider IS NOT NULL GROUP BY provider`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
+// WarmProvider: a cooling provider whose time is up works again.
+func (d *DB) WarmProvider(ctx context.Context, id string) error {
+	_, err := d.ExecContext(ctx, `UPDATE providers SET state='ok', cooling_until=NULL WHERE id=? AND state='cooling'`, id)
+	return err
+}

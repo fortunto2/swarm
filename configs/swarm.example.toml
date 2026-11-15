@@ -22,12 +22,18 @@ max_workers = 6
 task_wall_clock = "45m"
 max_attempts = 4
 
+# The provider registry. Each entry is one subscription (one account). roles: worker
+# (default), reviewer, lead. priority: lower is tried first for a tier. budget_usd_day:
+# dollars per UTC day from the CLI's own cost reports; spent, the provider pauses until
+# the next UTC midnight. `swarm providers` shows the live state of all of them.
 [providers.claude-a]
 kind = "claude"
 family = "anthropic"
 config_dir = "~/.swarm/accounts/claude-a"
 slots = 3
 tiers = ["S", "A", "B"]
+roles = ["lead", "worker", "reviewer"]
+priority = 3
 models = { S = "claude-fable-5-2", A = "opus", B = "sonnet" }
 
 [providers.codex]
@@ -36,6 +42,8 @@ family = "openai"
 home = "~/.swarm/accounts/codex"
 slots = 3
 tiers = ["A", "B"]
+roles = ["worker", "reviewer"]
+priority = 2
 
 [providers.kimi]
 kind = "claude"
@@ -44,6 +52,8 @@ config_dir = "~/.swarm/accounts/kimi"
 env = { ANTHROPIC_BASE_URL = "https://kimi.example.com/anthropic", ANTHROPIC_AUTH_TOKEN = "secret:kimi", ANTHROPIC_MODEL = "k3" }
 slots = 4
 tiers = ["B"]
+priority = 1          # cheapest first for routine work
+budget_usd_day = 20
 
 [nodes.laptop]
 host = "local"

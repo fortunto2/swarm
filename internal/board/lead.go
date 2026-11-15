@@ -105,9 +105,10 @@ func (s *Service) ListTasks(ctx context.Context, tok, status string) ([]db.TaskR
 }
 
 type StatusView struct {
-	Tasks   map[string]int `json:"tasks"`
-	SpentUS float64        `json:"spent_usd_24h"`
-	Workers int            `json:"attempts_running"`
+	Tasks     map[string]int `json:"tasks"`
+	SpentUS   float64        `json:"spent_usd_24h"`
+	Workers   int            `json:"attempts_running"`
+	Providers any            `json:"providers,omitempty"`
 }
 
 func (s *Service) Status(ctx context.Context, tok string) (StatusView, error) {
@@ -120,6 +121,9 @@ func (s *Service) Status(ctx context.Context, tok string) (StatusView, error) {
 	}
 	v := StatusView{Tasks: counts, Workers: counts["running"]}
 	v.SpentUS, _ = s.DB.SpentSince(ctx, 86400)
+	if s.Providers != nil {
+		v.Providers, _ = s.Providers(ctx)
+	}
 	return v, nil
 }
 

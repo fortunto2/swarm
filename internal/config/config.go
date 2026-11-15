@@ -65,8 +65,14 @@ type Provider struct {
 	Slots     int               `toml:"slots" json:"slots,omitempty"`
 	Tiers     []string          `toml:"tiers" json:"tiers,omitempty"`
 	Models    map[string]string `toml:"models" json:"models,omitempty"`
-	BudgetUSD float64           `toml:"budget_usd" json:"budget_usd,omitempty"`
-	Command   []string          `toml:"command" json:"command,omitempty"` // kind=mock only: argv of the fake worker
+	// Registry fields. Roles: worker (default), reviewer (phase 4), lead (phase 2). Priority:
+	// lower is tried first among providers that can take a tier. BudgetUSDDay: dollars per
+	// UTC day, measured from the CLI's own cost reports; spent, the provider cools until
+	// the next UTC midnight. 0 means no cap.
+	Roles        []string `toml:"roles" json:"roles,omitempty"`
+	Priority     int      `toml:"priority" json:"priority,omitempty"`
+	BudgetUSDDay float64  `toml:"budget_usd_day" json:"budget_usd_day,omitempty"`
+	Command      []string `toml:"command" json:"command,omitempty"` // kind=mock only: argv of the fake worker
 	// kind=claude: which settings load (user,project,local). Empty = the CLI's default, all
 	// of them: the operator's hooks and skills help workers too.
 	SettingSources string `toml:"setting_sources" json:"setting_sources,omitempty"`
@@ -111,12 +117,13 @@ type Config struct {
 }
 
 var (
-	kinds      = []string{"claude", "codex", "mock"}
-	tiers      = []string{"S", "A", "B"}
-	merges     = []string{"ff", "pr"}
-	roles      = []string{"supervisor", "tree", "tick", "script", "event"}
-	secretKey  = regexp.MustCompile(`(?i)(TOKEN|KEY|SECRET|PASSWORD)`)
-	refPattern = regexp.MustCompile(`^(secret|env):[A-Za-z0-9_./-]+$`)
+	kinds         = []string{"claude", "codex", "mock"}
+	tiers         = []string{"S", "A", "B"}
+	merges        = []string{"ff", "pr"}
+	roles         = []string{"supervisor", "tree", "tick", "script", "event"}
+	providerRoles = []string{"worker", "reviewer", "lead"}
+	secretKey     = regexp.MustCompile(`(?i)(TOKEN|KEY|SECRET|PASSWORD)`)
+	refPattern    = regexp.MustCompile(`^(secret|env):[A-Za-z0-9_./-]+$`)
 )
 
 // ResolveProfileDir: --profile flag, else SWARM_PROFILE. A bare name is not guessed.
@@ -238,6 +245,14 @@ func (c *Config) Validate() error {
 		if p.Slots < 1 {
 			bad("providers.%s.slots must be >= 1", id)
 		}
+		for _, r := range p.Roles {
+			if !slices.Contains(providerRoles, r) {
+				bad("providers.%s.roles: %q is not one of %v", id, r, providerRoles)
+			}
+		}
+		if p.BudgetUSDDay < 0 {
+			bad("providers.%s.budget_usd_day must be >= 0", id)
+		}
 		if p.Kind == "mock" && len(p.Command) == 0 {
 			bad("providers.%s: kind mock needs command", id)
 		}
@@ -348,4 +363,12 @@ func Schema() (*jsonschema.Schema, error) {
 	s.Title = "swarm.toml"
 	s.Schema = "https://json-schema.org/draft/2020-12/schema"
 	return s, nil
+}
+
+// Can: whether a provider may serve a role. No roles listed means a worker only.
+func (p Provider) Can(role string) bool {
+	if len(p.Roles) == 0 {
+		return role == "worker"
+	}
+	return slices.Contains(p.Roles, role)
 }

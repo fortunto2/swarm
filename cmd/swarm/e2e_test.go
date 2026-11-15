@@ -524,3 +524,37 @@ func TestTaskAddGoesThroughARunningDaemon(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 }
+
+// A provider over its daily budget cools until the next UTC midnight: the next task waits,
+// the daemon does not spin, and the registry says why.
+func TestDailyBudgetCoolsTheProvider(t *testing.T) {
+	repo := testbed(t)
+	worker := `echo '{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":5}}'
+f="t$SWARM_TASK_ID.go"
+printf 'package app\n\nfunc T%s() int { return %s }\n' "$SWARM_TASK_ID" "$SWARM_TASK_ID" > "$f"
+git add -A && git commit -qm "T$SWARM_TASK_ID"
+swarm board done "$(git rev-parse HEAD)"
+`
+	prof := profile(t, repo, worker, 2)
+	toml := filepath.Join(prof, "swarm.toml")
+	b, _ := os.ReadFile(toml)
+	_ = os.WriteFile(toml, []byte(strings.Replace(string(b), "family = \"mock\"", "family = \"mock\"\nbudget_usd_day = 0.4", 1)), 0o600)
+	for _, a := range [][]string{
+		{"task", "add", "--repo", "app", "--title", "A", "--spec", "a", "--acceptance", "x"},
+		{"task", "add", "--repo", "app", "--run", "1", "--title", "B", "--spec", "b", "--acceptance", "x", "--needs", "1"},
+	} {
+		if out, err := swarm(t, prof, 30*time.Second, a...); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	}
+	if out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if st := status(t, prof); !strings.Contains(st, "merged       1") || !strings.Contains(st, "ready        1") {
+		t.Fatalf("want A merged and B waiting:\n%s", st)
+	}
+	out, err := swarm(t, prof, 30*time.Second, "providers")
+	if err != nil || !strings.Contains(out, "cooling until") || !strings.Contains(out, "daily budget spent: $0.50 of $0.40") {
+		t.Fatalf("registry view: %v\n%s", err, out)
+	}
+}

@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"syscall"
 	"time"
 
@@ -25,26 +23,6 @@ import (
 
 func (d *Daemon) promote(ctx context.Context) error { return d.DB.Promote(ctx) }
 
-// pickProvider: a provider that serves the tier, is on this node and has a free slot.
-// Cheapest-first and failed-before ordering arrive with several providers (phase 4).
-func (d *Daemon) pickProvider(tier string, busy map[string]int) (string, bool) {
-	ids := slices.Sorted(maps.Keys(d.adapters))
-	node, hasNode := d.Cfg.Nodes[d.Node]
-	for _, id := range ids {
-		p := d.Cfg.Providers[id]
-		if len(p.Tiers) > 0 && !slices.Contains(p.Tiers, tier) {
-			continue
-		}
-		if hasNode && len(node.Accounts) > 0 && !slices.Contains(node.Accounts, id) {
-			continue
-		}
-		if busy[id] < p.Slots {
-			return id, true
-		}
-	}
-	return "", false
-}
-
 func (d *Daemon) maxWorkers() int {
 	if n, ok := d.Cfg.Nodes[d.Node]; ok && n.MaxWorkers > 0 && n.MaxWorkers < d.Cfg.Limits.MaxWorkers {
 		return n.MaxWorkers
@@ -59,6 +37,9 @@ func (d *Daemon) schedule(ctx context.Context) error {
 	}
 	inFlight, err := d.DB.ClaimsInFlight(ctx)
 	if err != nil {
+		return err
+	}
+	if err := d.refreshRegistry(ctx); err != nil {
 		return err
 	}
 	busy := map[string]int{}

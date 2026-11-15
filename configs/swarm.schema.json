@@ -127,7 +127,19 @@
               "type": "string"
             }
           },
-          "budget_usd": {
+          "roles": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "budget_usd_day": {
             "type": "number"
           },
           "command": {

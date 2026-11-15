@@ -45,6 +45,8 @@ type Service struct {
 	Locate func(t db.Task) worktree.WT
 	// Repo gives a profile repo's settings (the gate a worker runs on itself).
 	Repo func(name string) (config.Repo, error)
+	// Providers gives the provider registry view (declared + live).
+	Providers func(ctx context.Context) (any, error)
 
 	mu     sync.Mutex
 	tokens map[string]Identity
