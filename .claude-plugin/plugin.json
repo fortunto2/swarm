@@ -1,0 +1,10 @@
+{
+  "name": "swarm",
+  "description": "Drive swarm: coding agents on official CLIs in separate worktrees, a test gate before main.",
+  "version": "0.1.0",
+  "author": { "name": "Rustam Salavatov", "url": "https://github.com/fortunto2" },
+  "repository": "https://github.com/fortunto2/swarm",
+  "homepage": "https://github.com/fortunto2/swarm",
+  "license": "MIT",
+  "keywords": ["agents", "orchestration", "claude-code", "codex", "worktree"]
+}

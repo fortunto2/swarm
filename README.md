@@ -1,0 +1,135 @@
+# swarm
+
+One lead, many subscriptions, merged code. `swarm` runs coding agents on the official
+CLIs you already pay for (Claude Code, Codex), each task in its own git worktree, and lets
+nothing into `main` that has not passed your tests.
+
+Status: **early**. Phase 1 works end to end on a scripted worker: a task goes
+`ready → running → verifying → merged` through the board, the gate and a fast-forward
+merge, and a worker that deletes or skips a test, touches files it does not own, or dies
+silently never reaches `main`. The lead, several providers and the sandbox are next
+(see *Roadmap*).
+
+## Why
+
+A single agent session is limited by one context and one rate limit. Ten sessions on one
+repository step on each other's files, report "done" without running tests, and burn a
+week of quota by Wednesday. `swarm` is the dull part that makes many agents usable:
+
+- **Deterministic dispatcher, no model in the loop.** It claims tasks atomically, launches
+  workers, reaps the dead, retries, merges. Models only work on tasks.
+- **The gate decides, not the agent.** `report_done` hands a commit to the gate: static
+  checks (files inside the task's claims, no deleted or skipped tests), then your own test
+  command, then a fast-forward into `main`. Rebased and re-gated when `main` moved.
+- **One door.** Agents reach the system only through a small MCP server (`board`), with a
+  one-time token per attempt, so a worker cannot speak as another task.
+- **Official CLIs only.** No proxies that wrap a subscription's OAuth into an API, no
+  third-party harnesses with a Claude subscription login.
+- **Profiles, not forks.** Everything that differs between your worlds (providers, repos,
+  merge policy, secrets, extra tools) lives in a profile's `swarm.toml`. The core holds no
+  names.
+
+## Quick start
+
+```sh
+go install github.com/fortunto2/swarm/cmd/swarm@latest
+
+mkdir -p ~/swarm-profiles/me && cp configs/swarm.example.toml ~/swarm-profiles/me/swarm.toml
+# edit repos.*.path, gate, providers; then:
+export SWARM_PROFILE=~/swarm-profiles/me
+swarm check            # validates the profile, lists every problem at once
+swarm init             # creates the profile's SQLite
+
+swarm task add --repo app --title "add Two" \
+  --spec "add func Two() int returning 2, with a test" \
+  --acceptance "go test passes; TestTwo exists" --files two.go,two_test.go
+swarm daemon --until-idle
+swarm status
+```
+
+Try it without spending quota: a provider with `kind = "mock"` runs a script instead of a
+model, over the same board protocol (`cmd/swarm/e2e_test.go` has working scripts).
+
+## How a task moves
+
+```
+ready ──claim──▶ running ──report_done──▶ verifying ──gate ok──▶ merging ──ff──▶ merged
+  ▲                 │                         │                      │
+  │  died silently  │   gate failed           │   main moved         │
+  └─(infra, ≤3)─────┘◀──(attempt, ≤max)───────┘◀──rebase, re-gate────┘
+                    blocked: out of attempts, or report_blocked → the lead (phase 2) or you
+```
+
+A failure that is the model's (gate, timeout) counts as an attempt and its log tail goes
+into the next attempt's prompt. A failure that is the infrastructure's (crash, lost lease)
+does not count against the model.
+
+## Profile
+
+`configs/swarm.example.toml` is the full reference. The parts that matter:
+
+| Section | What |
+|---|---|
+| `[profile]` | name, `worktree_root` (must be outside every repo), `state_dir`, `notify`, `secret_cmd` |
+| `[repos.<name>]` | path, `gate` commands, `merge = "ff"` (or `"pr"`, coming) |
+| `[providers.<id>]` | `kind` (claude, codex, mock), `family` (review crosses families), slots, tiers, models, env |
+| `[nodes.<id>]` | where workers run: `local` or `ssh:<alias>` (multi-node is on the roadmap) |
+| `[mcp.<name>]` | extra read-only MCP servers for workers and the lead |
+| `[hooks]` | `after_merge` commands, e.g. reindex the repo |
+
+Secrets are never values in the file: a token-looking key must hold `secret:<name>`
+(resolved by `secret_cmd`) or `env:<VAR>`, and `swarm check` refuses anything else.
+
+### Code search for workers
+
+Workers find their way faster with an index of the code and of past sessions.
+[solograph](https://github.com/fortunto2/solograph) is one binary that serves both over MCP;
+add it as `[mcp.solograph]` and reindex after each merge with an `after_merge` hook, as the
+example config does. Any MCP server works the same way.
+
+## Roadmap
+
+1. ~~Skeleton: config, schema, atomic claim~~
+2. ~~One provider, one worker: board, worktree, gate, ff merge~~ (scripted and live Claude runs)
+   ~~Session tools: any Claude Code session queues and watches work over MCP~~
+3. Lead and task tree: decomposition, `split_task`, dependencies, file claims, batched merge queue
+4. Several providers: Codex adapter, tiers, cross-family review, rate-limit detection and failover
+5. Sandbox: workers in containers with an egress allowlist; unattended overnight runs
+6. `merge = "pr"`: leave a branch and a PR description for a human to push
+7. Nodes: workers on other machines over SSH, one coordinator per profile
+8. Scheduled and event work (`tick`, `event`, `script`) on the same queue
+
+Deviations from the original design are logged in `docs/DEVIATIONS.md`.
+
+## From any Claude Code session, its subagents and teams
+
+Register the session side once:
+
+```sh
+claude mcp add swarm -- swarm mcp --profile ~/swarm-profiles/me
+```
+
+Every session then has `swarm_status`, `swarm_add_task`, `swarm_list_tasks` and
+`swarm_task_notes`, and so do its subagents and agent-team teammates, which inherit the
+session's MCP servers. A planning session queues the work, the daemon's workers do it,
+and anyone can watch it reach `merged`. Sessions queue and watch; only the gate decides
+that something is done. The session authenticates with an operator token kept in the
+profile's state dir (mode 0600); a worker's per-attempt token cannot reach these tools.
+
+## Budget
+
+Workers keep your hooks, skills and plugins: they help. What swarm watches instead is
+spend. Each attempt records tokens and dollars from the CLI's own final event (NULL when
+the CLI does not say), `swarm_status` shows the last 24 hours, and per-provider limits
+and failover arrive with several providers. A CLI that is not logged in takes its
+provider out of rotation on the first try instead of burning retries.
+
+## Using it from Claude Code
+
+`skills/swarm/SKILL.md` teaches an agent to drive `swarm`: write a task that a gate can
+check, size it, add it, run the daemon, read why something is blocked. Install the repo as
+a plugin, or symlink the skill into `~/.claude/skills/`.
+
+## License
+
+MIT

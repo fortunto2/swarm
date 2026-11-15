@@ -1,0 +1,64 @@
+# One profile = one world. Copy into <harness>/swarm/swarm.toml and edit.
+# Secrets are references (secret:<name> resolved by the profile's secret tool, env:<VAR>),
+# never values: Load refuses a token-looking key that holds a literal.
+
+[profile]
+name = "example"
+state_dir = "state"                       # relative to this file's dir: swarm.db, logs
+worktree_root = "~/.swarm/wt/example"     # outside every repo
+notify = "echo"                           # command; the message is appended as the last arg
+harness = ""                              # harness-core profile dir for runs.jsonl, optional
+
+[repos.app]
+path = "~/code/app"
+main_branch = "main"
+gate = ["go vet ./...", "go test ./... -count=1"]
+gate_timeout = "15m"
+merge = "ff"                              # "pr" leaves swarm/run-<id> for a human to push
+
+[limits]
+max_workers = 6
+task_wall_clock = "45m"
+max_attempts = 4
+
+[providers.claude-a]
+kind = "claude"
+family = "anthropic"
+config_dir = "~/.swarm/accounts/claude-a"
+slots = 3
+tiers = ["S", "A", "B"]
+models = { S = "claude-fable-5-2", A = "opus", B = "sonnet" }
+
+[providers.codex]
+kind = "codex"
+family = "openai"
+home = "~/.swarm/accounts/codex"
+slots = 3
+tiers = ["A", "B"]
+
+[providers.kimi]
+kind = "claude"
+family = "moonshot"
+config_dir = "~/.swarm/accounts/kimi"
+env = { ANTHROPIC_BASE_URL = "https://kimi.example.com/anthropic", ANTHROPIC_AUTH_TOKEN = "secret:kimi", ANTHROPIC_MODEL = "k3" }
+slots = 4
+tiers = ["B"]
+
+[nodes.laptop]
+host = "local"
+max_workers = 6
+accounts = ["claude-a", "codex", "kimi"]
+roles = ["supervisor", "tree"]
+
+# Extra read-only MCP servers next to the board. A code + session index pays for itself:
+# a worker finds where a name is defined across repos, and what an earlier attempt or a
+# past session already tried. solograph (github.com/fortunto2/solograph) is one binary:
+[mcp.solograph]
+command = "~/.solo/bin/solograph"
+args = []
+roles = ["worker", "lead"]
+
+[hooks]
+# reindex the repo after each merge, so the next worker's search sees the merged code
+after_merge = ["~/.solo/bin/solograph scan -p {repo} >/dev/null"]
+timeout = "2m"
