@@ -45,6 +45,8 @@ type Service struct {
 	Locate func(t db.Task) worktree.WT
 	// Repo gives a profile repo's settings (the gate a worker runs on itself).
 	Repo func(name string) (config.Repo, error)
+	// Notify tells the operator (the profile's notifier); nil means nobody is listening.
+	Notify func(msg string)
 	// Providers gives the provider registry view (declared + live).
 	Providers func(ctx context.Context) (any, error)
 
@@ -208,6 +210,9 @@ func (s *Service) ReportBlocked(ctx context.Context, tok, reason, question strin
 	s.DB.EndAttempt(ctx, t.ID, "blocked")
 	_ = s.DB.Note(ctx, t.RunID, t.ID, id.Actor(), "question", reason+"\n\nQ: "+question)
 	s.DB.Event(ctx, id.Actor(), t.ID, "report_blocked", map[string]string{"reason": reason, "question": question})
+	if s.Notify != nil {
+		s.Notify(fmt.Sprintf("T%d %q asks: %s", t.ID, t.Title, question))
+	}
 	s.signal(t.ID)
 	return nil
 }
@@ -238,6 +243,7 @@ type GateSpec struct {
 	Base       string   `json:"base"`
 	Files      []string `json:"files_write"`
 	AllowTests bool     `json:"allow_test_changes"`
+	Reruns     int      `json:"reruns"`
 }
 
 func (s *Service) GateSpec(ctx context.Context, tok string) (GateSpec, error) {
@@ -259,5 +265,5 @@ func (s *Service) GateSpec(ctx context.Context, tok string) (GateSpec, error) {
 	}
 	files, _ := s.DB.WriteClaims(ctx, t.ID)
 	return GateSpec{Commands: r.Gate, TimeoutSec: int(r.GateTimeout.Seconds()), Base: base, Files: files,
-		AllowTests: strings.Contains(t.Spec, gate.AllowTestsMarker)}, nil
+		AllowTests: strings.Contains(t.Spec, gate.AllowTestsMarker), Reruns: r.Reruns()}, nil
 }

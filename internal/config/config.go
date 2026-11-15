@@ -46,7 +46,8 @@ type Repo struct {
 	MainBranch  string   `toml:"main_branch" json:"main_branch,omitempty"`
 	Gate        []string `toml:"gate" json:"gate,omitempty"`
 	GateTimeout Duration `toml:"gate_timeout" json:"gate_timeout,omitempty"`
-	Merge       string   `toml:"merge" json:"merge,omitempty"` // "ff": ff-only into main; "pr": leave a branch for a human PR
+	Merge       string   `toml:"merge" json:"merge,omitempty"`
+	GateReruns  *int     `toml:"gate_reruns" json:"gate_reruns,omitempty"` // reruns of a failed gate command (flaky tests); default 1 // "ff": ff-only into main; "pr": leave a branch for a human PR
 }
 
 type Limits struct {
@@ -194,6 +195,10 @@ func (c *Config) defaults() {
 		}
 		if r.GateTimeout.Duration == 0 {
 			r.GateTimeout.Duration = 15 * time.Minute
+		}
+		if r.GateReruns == nil {
+			one := 1
+			r.GateReruns = &one
 		}
 		c.Repos[n] = r
 	}
@@ -371,4 +376,12 @@ func (p Provider) Can(role string) bool {
 		return role == "worker"
 	}
 	return slices.Contains(p.Roles, role)
+}
+
+// Reruns of a failed gate command; 1 unless the repo says otherwise.
+func (r Repo) Reruns() int {
+	if r.GateReruns == nil {
+		return 1
+	}
+	return *r.GateReruns
 }

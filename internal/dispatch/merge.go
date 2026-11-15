@@ -61,7 +61,7 @@ func runGate(ctx context.Context, r config.Repo, dir, commit string) gate.Verdic
 		return gate.Verdict{Stage: "gate", Reason: "could not check out the submitted commit", Tail: err.Error()}
 	}
 	defer func() { _, _ = gitx.Run(context.WithoutCancel(ctx), r.Path, "worktree", "remove", "--force", dir) }()
-	return gate.Run(ctx, dir, r.Gate, r.GateTimeout.Duration)
+	return gate.Run(ctx, dir, r.Gate, r.GateTimeout.Duration, r.Reruns())
 }
 
 func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
@@ -72,6 +72,11 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 	}
 	d.DB.Event(ctx, "swarmd", r.taskID, "gate_"+map[bool]string{true: "pass", false: "fail"}[r.v.OK],
 		map[string]string{"stage": r.v.Stage, "reason": r.v.Reason})
+	if len(r.v.Flaky) > 0 {
+		d.DB.Event(ctx, "swarmd", r.taskID, "gate_flaky", map[string]any{"commands": r.v.Flaky})
+		d.notify(fmt.Sprintf("swarm %s: flaky gate command on T%d (failed, then passed on rerun): %s",
+			d.Cfg.Profile.Name, r.taskID, strings.Join(r.v.Flaky, "; ")))
+	}
 	if !r.v.OK {
 		d.DB.Event(ctx, "swarmd", r.taskID, "gate_fail_detail", map[string]string{"tail": r.v.Tail})
 		d.fail(ctx, r.taskID, db.Verifying, modelFail, "gate_fail", r.v.Stage+": "+r.v.Reason+"\n"+r.v.Tail)

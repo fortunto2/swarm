@@ -20,9 +20,10 @@ import (
 
 type Verdict struct {
 	OK     bool
-	Stage  string // "static" | "gate"
-	Reason string // short, for the event log
-	Tail   string // last 4K of the failing output, for the next attempt
+	Stage  string   // "static" | "gate"
+	Reason string   // short, for the event log
+	Tail   string   // last 4K of the failing output, for the next attempt
+	Flaky  []string // commands that failed, then passed on a rerun
 }
 
 // AllowTestsMarker in a task's spec lets it delete or skip tests (a task that rewrites a
@@ -110,36 +111,53 @@ func owns(claim, file string) bool {
 }
 
 // Run executes the repo's gate commands in the worktree, in order, under one timeout.
+// A command that fails is run again up to `reruns` times (flaky tests, PRD §12); one that
+// passes on a rerun passes, and is named in Flaky so a person can quarantine the test.
 // The process group is killed on timeout so no test runner outlives the gate.
-func Run(ctx context.Context, wt string, cmds []string, timeout time.Duration) Verdict {
+func Run(ctx context.Context, wt string, cmds []string, timeout time.Duration, reruns int) Verdict {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var flaky []string
 	for _, c := range cmds {
-		var out bytes.Buffer
-		cmd := exec.Command("sh", "-c", c)
-		cmd.Dir = wt
-		cmd.Stdout, cmd.Stderr = &out, &out
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		if err := cmd.Start(); err != nil {
-			return Verdict{Stage: "gate", Reason: c + ": " + err.Error()}
-		}
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case err := <-done:
-			if err != nil {
-				var ee *exec.ExitError
-				code := -1
-				if errors.As(err, &ee) {
-					code = ee.ExitCode()
-				}
-				return Verdict{Stage: "gate", Reason: fmt.Sprintf("%s: exit %d", c, code), Tail: tail(out.String())}
+		v := runOne(ctx, wt, c, timeout)
+		for i := 0; !v.OK && i < reruns && ctx.Err() == nil; i++ {
+			if v = runOne(ctx, wt, c, timeout); v.OK {
+				flaky = append(flaky, c)
 			}
-		case <-ctx.Done():
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			<-done
-			return Verdict{Stage: "gate", Reason: c + ": timeout after " + timeout.String(), Tail: tail(out.String())}
+		}
+		if !v.OK {
+			v.Flaky = flaky
+			return v
 		}
 	}
-	return Verdict{OK: true, Stage: "gate"}
+	return Verdict{OK: true, Stage: "gate", Flaky: flaky}
+}
+
+func runOne(ctx context.Context, wt, c string, timeout time.Duration) Verdict {
+	var out bytes.Buffer
+	cmd := exec.Command("sh", "-c", c)
+	cmd.Dir = wt
+	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return Verdict{Stage: "gate", Reason: c + ": " + err.Error()}
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			var ee *exec.ExitError
+			code := -1
+			if errors.As(err, &ee) {
+				code = ee.ExitCode()
+			}
+			return Verdict{Stage: "gate", Reason: fmt.Sprintf("%s: exit %d", c, code), Tail: tail(out.String())}
+		}
+		return Verdict{OK: true, Stage: "gate"}
+	case <-ctx.Done():
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done
+		return Verdict{Stage: "gate", Reason: c + ": timeout after " + timeout.String(), Tail: tail(out.String())}
+	}
 }

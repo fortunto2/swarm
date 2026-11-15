@@ -244,7 +244,7 @@ func gateCmd() *cobra.Command {
 			} else {
 				fmt.Fprintln(out, "gate: nothing committed yet; static checks run on your commits")
 			}
-			v := gate.Run(ctx, dir, spec.Commands, time.Duration(spec.TimeoutSec)*time.Second)
+			v := gate.Run(ctx, dir, spec.Commands, time.Duration(spec.TimeoutSec)*time.Second, spec.Reruns)
 			if !v.OK {
 				fmt.Fprintf(out, "gate: FAIL %s\n%s\n", v.Reason, v.Tail)
 				return errors.New("gate failed")

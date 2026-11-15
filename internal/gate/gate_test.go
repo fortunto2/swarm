@@ -84,7 +84,7 @@ func TestStatic(t *testing.T) {
 func TestRunTimeoutKillsGroup(t *testing.T) {
 	d := t.TempDir()
 	start := time.Now()
-	v := Run(context.Background(), d, []string{"sleep 30 & sleep 30"}, 300*time.Millisecond)
+	v := Run(context.Background(), d, []string{"sleep 30 & sleep 30"}, 300*time.Millisecond, 0)
 	if v.OK || time.Since(start) > 5*time.Second {
 		t.Fatalf("timeout not enforced: ok=%v after %v (%s)", v.OK, time.Since(start), v.Reason)
 	}
@@ -92,7 +92,7 @@ func TestRunTimeoutKillsGroup(t *testing.T) {
 
 func TestRunStopsAtFirstFailure(t *testing.T) {
 	d := t.TempDir()
-	v := Run(context.Background(), d, []string{"true", "echo boom; exit 3", "touch never"}, time.Minute)
+	v := Run(context.Background(), d, []string{"true", "echo boom; exit 3", "touch never"}, time.Minute, 1)
 	if v.OK || v.Reason != "echo boom; exit 3: exit 3" || v.Tail != "boom\n" {
 		t.Fatalf("got %+v", v)
 	}
@@ -115,5 +115,23 @@ func TestOverlap(t *testing.T) {
 		if got := Overlap(c.a, c.b); got != c.want {
 			t.Errorf("Overlap(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
 		}
+	}
+}
+
+// A command that fails once and then passes is flaky: the gate passes and names it. One
+// that fails every time still fails after its reruns.
+func TestRunRerunsFlakyOnce(t *testing.T) {
+	d := t.TempDir()
+	flaky := "if [ -f once ]; then exit 0; fi; touch once; exit 1"
+	v := Run(context.Background(), d, []string{flaky}, time.Minute, 1)
+	if !v.OK || len(v.Flaky) != 1 || v.Flaky[0] != flaky {
+		t.Fatalf("flaky command: %+v", v)
+	}
+	d2 := t.TempDir()
+	if v := Run(context.Background(), d2, []string{"echo x >> runs; exit 1"}, time.Minute, 1); v.OK {
+		t.Fatal("a command failing every time passed")
+	}
+	if runs, _ := os.ReadFile(filepath.Join(d2, "runs")); string(runs) != "x\nx\n" {
+		t.Fatalf("want the failing command run twice (once + one rerun), got %q", runs)
 	}
 }

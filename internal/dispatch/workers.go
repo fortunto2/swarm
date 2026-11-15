@@ -286,7 +286,9 @@ func (d *Daemon) notify(msg string) {
 	if d.Cfg.Profile.Notify == "" {
 		return
 	}
+	d.bg.Add(1) // awaited on exit: the last notification (run done) must not be lost
 	go func() {
+		defer d.bg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = exec.CommandContext(ctx, "sh", "-c", d.Cfg.Profile.Notify+` "$1"`, "notify", msg).Run()
@@ -341,6 +343,9 @@ func (d *Daemon) fail(ctx context.Context, id int64, from db.Status, kind failKi
 		_ = d.DB.Note(ctx, t.RunID, id, "swarmd", "review", fmt.Sprintf("attempt %d: %s\n%s", n, outcome, detail))
 	}
 	d.DB.Event(ctx, "swarmd", id, event, map[string]string{"outcome": outcome, "detail": detail, "now": string(to)})
+	if to == db.Blocked {
+		d.notify(fmt.Sprintf("swarm %s: T%d %q blocked after %s: needs the lead or a person", d.Cfg.Profile.Name, id, t.Title, outcome))
+	}
 	d.Log.Warn(event, "task", id, "outcome", outcome, "status", to)
 }
 

@@ -61,6 +61,12 @@
           },
           "merge": {
             "type": "string"
+          },
+          "gate_reruns": {
+            "type": [
+              "null",
+              "integer"
+            ]
           }
         },
         "additionalProperties": false

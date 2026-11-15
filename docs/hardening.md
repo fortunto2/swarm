@@ -72,8 +72,8 @@ already orders the queue.
 | 13 | Single writer: `swarm task add` goes through the daemon when it is running | §3, §5 MUST | done |
 | 14 | Worker env: `DISABLE_AUTOUPDATER=1`, a slot number, `PORT=20000+slot*10` | §8, §12 | done |
 | 15 | Provider registry: `roles`, `priority`, `budget_usd_day` (spent → cooling to next UTC midnight); live state in `providers`; `swarm providers` and in `swarm_status` | §2, §7, §11 | done |
-| 16 | Notify on run done and on a task blocked; `caffeinate` on macOS while running; hourly `git worktree prune` | §11, §12, §8 | |
-| 17 | A failed gate command is rerun once before the verdict (flaky tests) | §12 | |
+| 16 | Notify on run done and on a task blocked; `caffeinate` on macOS while running; hourly `git worktree prune` | §11, §12, §8 | done |
+| 17 | A failed gate command is rerun once before the verdict (flaky tests) | §12 | done |
 | 18 | Commit trailer `Swarm-Provider` in the worker prompt | §8 | done |
 
 Still open, by phase (not in this pass): the lead and its tools (`create_tasks`, `resolve`,
@@ -83,3 +83,9 @@ cooling with backoff and a probe run, escalation to a higher tier on attempt 3, 
 `claude-api` with a $ cap; containers and egress allowlist; `swarm report`, `logs`, `stop`,
 `pause`, log retention; the harness-core contract (runs.jsonl, `task item --done`, limits);
 the solo and Epiphan profiles with `merge = "pr"`.
+
+Pass 2 outcome: steps 12-18 landed with tests. Two of those tests were first written so
+they passed without the feature (the overlap test raced on its own lock; caught by
+disabling the check and seeing it stay green) and were rewritten until they went red. The
+notification test found a real loss: the last notification before exit (run done) was
+dropped because notify ran in an unawaited goroutine.

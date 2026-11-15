@@ -558,3 +558,29 @@ swarm board done "$(git rev-parse HEAD)"
 		t.Fatalf("registry view: %v\n%s", err, out)
 	}
 }
+
+// The operator hears about what needs them: a task that asked a question, and a run that
+// finished. Nothing per task that went fine.
+func TestNotifiesBlockedAndRunDone(t *testing.T) {
+	repo := testbed(t)
+	notes := filepath.Join(t.TempDir(), "notes")
+	worker := `if [ "$SWARM_TASK_ID" = 2 ]; then swarm board blocked "two readings of the spec" "should Two return 2 or \"2\"?"; exit 0; fi
+` + goodWorker
+	prof := profile(t, repo, worker, 2)
+	toml := filepath.Join(prof, "swarm.toml")
+	b, _ := os.ReadFile(toml)
+	_ = os.WriteFile(toml, []byte(strings.Replace(string(b), "[repos.app]", fmt.Sprintf("notify = \"printf '%%s\\\\n' >> %s\"\n\n[repos.app]", notes), 1)), 0o600)
+	addTask(t, prof, "")
+	if out, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--title", "ask", "--spec", "s", "--acceptance", "a"); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	got, _ := os.ReadFile(notes)
+	for _, want := range []string{`T2 "ask" asks: should Two return 2 or "2"?`, "run 1 done"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("no notification %q in:\n%s", want, got)
+		}
+	}
+}

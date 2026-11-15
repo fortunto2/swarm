@@ -13,7 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -66,6 +68,7 @@ type Daemon struct {
 	results  chan gateResult
 	wake     chan int64
 	bg       sync.WaitGroup // after-merge hooks: bounded by their timeout, awaited on exit
+	pruned   time.Time      // last git worktree prune
 	reg      registry       // provider states and spend, refreshed each schedule pass
 }
 
@@ -112,6 +115,8 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	}
 	d.Board.IssueFixed(op, board.Identity{Role: "lead"})
 	d.Board.Locate = d.locate
+	d.Board.Notify = d.notify
+	keepAwake()
 	d.Board.Repo = d.repo
 	d.Board.Providers = func(ctx context.Context) (any, error) { return ProviderViews(ctx, d.Cfg, d.DB) }
 	back, err := d.DB.EnsureProviders(ctx, slices.Sorted(maps.Keys(d.Cfg.Providers)))
@@ -175,6 +180,7 @@ func (d *Daemon) Tick(ctx context.Context) error {
 	if err := d.mergeOne(ctx); err != nil {
 		return err
 	}
+	d.pruneHourly(ctx)
 	return d.closeRuns(ctx)
 }
 
@@ -220,6 +226,7 @@ func (d *Daemon) closeRuns(ctx context.Context) error {
 		}
 		d.DB.Event(ctx, "swarmd", 0, "run_done", map[string]int64{"run": run})
 		d.Log.Info("run done", "run", run)
+		d.notify(fmt.Sprintf("swarm %s: run %d done", d.Cfg.Profile.Name, run))
 	}
 	return nil
 }
@@ -269,4 +276,24 @@ func (d *Daemon) reconcile(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// keepAwake: a sleeping Mac drops sessions mid-run (PRD §12). caffeinate holds the machine
+// awake for as long as this process lives, and exits with it.
+func keepAwake() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	_ = exec.Command("caffeinate", "-dimsu", "-w", strconv.Itoa(os.Getpid())).Start()
+}
+
+// pruneHourly drops worktree records whose directories are gone (PRD §8).
+func (d *Daemon) pruneHourly(ctx context.Context) {
+	if time.Since(d.pruned) < time.Hour {
+		return
+	}
+	d.pruned = time.Now()
+	for _, r := range d.Cfg.Repos {
+		_, _ = gitx.Run(ctx, r.Path, "worktree", "prune")
+	}
 }

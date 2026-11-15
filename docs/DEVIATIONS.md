@@ -21,3 +21,6 @@ Each line: what the PRD says, what was done, why.
 - §9 merge: a failed fast-forward blocks the task with the reason; the PRD only covers rebase conflicts.
 - §8 gate for workers: `swarm gate` instead of listing the gate commands in the prompt; permission rules from gate commands skip shells, cd, env.
 - sqlc (Schemas First) deferred with a trigger; see docs/hardening.md.
+- §2 registry: roles, priority and a daily dollar budget per provider in swarm.toml; live state in `providers`. The PRD's fixed tier orders (B: kimi → claude-b → codex) are expressed as priorities, not code.
+- §7 tasks without file claims are not checked for overlap: declaring files is what buys the guarantee.
+- §12 flaky tests: a failed gate command is rerun once (`gate_reruns`, default 1) and named in a notification; quarantine is left to a person.
