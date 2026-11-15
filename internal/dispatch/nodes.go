@@ -49,25 +49,43 @@ type nodeState struct {
 	wake    chan struct{}
 }
 
-// nodeEvent: a report the loop must apply (it owns the proc map).
+// nodeEvent: a report the loop must apply (it owns the proc map), or, with live set, the
+// node's list of what is running there (from a hello or a poll).
 type nodeEvent struct {
 	node string
 	r    board.NodeReport
+	live []string
+	list bool
 }
+
+// liveGrace: a worker that left the node's live list gets this long for its exit report
+// (sent right after) before the attempt counts as lost.
+const liveGrace = 30 * time.Second
+
+// startGrace: a start order the node never acknowledged (lost with a dead poll) is given up
+// after this long.
+const startGrace = 3 * time.Minute
 
 // hub is the daemon's side of the node link; its methods run on RPC goroutines.
 type hub struct {
 	d      *Daemon
 	mu     sync.Mutex
 	nodes  map[string]*nodeState
-	expect map[string]bool              // workers ordered to start and not yet finished
-	pushes map[int64]chan error         // report_done waiting for its branch
-	gates  map[int64]chan *gate.Verdict // a gate waiting for its node
+	expect map[string]bool      // workers ordered to start and not yet finished
+	pushes map[int64]chan error // report_done waiting for its branch
+	gates  map[int64]gateWait   // a gate waiting for its node
+}
+
+// gateWait: the channel of a gate run on a node, and the commit it is for: a verdict for
+// another commit (a gate the node kept running after a cancel) is not this one's.
+type gateWait struct {
+	commit string
+	ch     chan *gate.Verdict
 }
 
 func newHub(d *Daemon) *hub {
 	return &hub{d: d, nodes: map[string]*nodeState{}, expect: map[string]bool{},
-		pushes: map[int64]chan error{}, gates: map[int64]chan *gate.Verdict{}}
+		pushes: map[int64]chan error{}, gates: map[int64]gateWait{}}
 }
 
 func newSession() string {
@@ -121,6 +139,7 @@ func (h *hub) Hello(ctx context.Context, in board.NodeHello) (board.NodeWelcome,
 	h.mu.Unlock()
 	h.d.DB.Event(ctx, "swarmd", 0, "node_hello", map[string]any{"node": in.Name, "version": in.Version, "repos": slices.Sorted(maps.Keys(repos))})
 	h.record(ctx, in.Name)
+	h.tellLoop(ctx, nodeEvent{node: in.Name, live: in.Live, list: true})
 	return w, nil
 }
 
@@ -153,6 +172,7 @@ func (h *hub) Poll(ctx context.Context, in board.NodePoll) (board.NodeOrders, er
 	h.mu.Unlock()
 	h.record(ctx, name)
 	h.cool(ctx, name, in.Cool)
+	h.tellLoop(ctx, nodeEvent{node: name, live: in.Live, list: true})
 	if wait > 0 {
 		h.mu.Lock()
 		empty := len(n.cmds) == 0
@@ -206,24 +226,30 @@ func (h *hub) Report(ctx context.Context, in board.NodeReport) error {
 		}
 		h.mu.Unlock()
 		return nil
-	case "gate":
-		if ch, ok := h.gates[in.Task]; ok {
+	case "gate", "gate_error":
+		// gate_error: the node could not run it (fetch, checkout, disk): no verdict, and
+		// nothing the task's worker did; nil makes the gate wait and try again
+		if w, ok := h.gates[in.Task]; ok && w.commit == in.Commit {
 			delete(h.gates, in.Task)
-			v := in.Verdict
-			if v == nil {
-				v = &gate.Verdict{Stage: "gate", Reason: "the node could not run the gate", Tail: in.Err}
+			var v *gate.Verdict
+			if in.Kind == "gate" {
+				v = in.Verdict
 			}
-			ch <- v
+			w.ch <- v
 		}
 		h.mu.Unlock()
 		return nil
 	}
 	h.mu.Unlock()
 	if in.Kind != "started" && in.Kind != "exited" && in.Kind != "failed" {
-		return &board.Error{Code: "bad_input", Hint: "report kind " + in.Kind + " is not started, exited, failed, pushed or gate"}
+		return &board.Error{Code: "bad_input", Hint: "report kind " + in.Kind + " is not started, exited, failed, pushed, gate or gate_error"}
 	}
+	return h.tellLoop(ctx, nodeEvent{node: name, r: in})
+}
+
+func (h *hub) tellLoop(ctx context.Context, ev nodeEvent) error {
 	select {
-	case h.d.nodeEv <- nodeEvent{node: name, r: in}:
+	case h.d.nodeEv <- ev:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -315,6 +341,12 @@ func (h *hub) order(node string, c board.NodeCmd) {
 	}
 }
 
+func (h *hub) expected(worker string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.expect[worker]
+}
+
 func (h *hub) forget(worker string) {
 	h.mu.Lock()
 	delete(h.expect, worker)
@@ -385,7 +417,7 @@ func (h *hub) gateOn(ctx context.Context, node string, t db.Task, commit string,
 	}
 	ch := make(chan *gate.Verdict, 1)
 	h.mu.Lock()
-	h.gates[t.ID] = ch
+	h.gates[t.ID] = gateWait{commit: commit, ch: ch}
 	h.mu.Unlock()
 	h.order(node, board.NodeCmd{Kind: "gate", Task: t.ID, Repo: t.Repo, Commit: commit, Ref: ref})
 	defer func() {
@@ -399,6 +431,9 @@ func (h *hub) gateOn(ctx context.Context, node string, t db.Task, commit string,
 	for {
 		select {
 		case v := <-ch:
+			if v == nil {
+				return gate.Verdict{}, false
+			}
 			return *v, true
 		case <-deadline:
 			return gate.Verdict{}, false
@@ -447,6 +482,24 @@ func (d *Daemon) verify(ctx context.Context, t db.Task) (string, error) {
 
 // applyNode: a node said what happened to an attempt. Only the loop touches procs.
 func (d *Daemon) applyNode(ctx context.Context, ev nodeEvent) {
+	if ev.list {
+		live := map[string]bool{}
+		for _, w := range ev.live {
+			live[w] = true
+		}
+		for _, p := range d.procs {
+			if p.node != ev.node {
+				continue
+			}
+			switch {
+			case live[p.worker]:
+				p.seenLive, p.missing = true, time.Time{}
+			case p.seenLive && p.missing.IsZero():
+				p.missing = time.Now() // gone from the node: its exit report has liveGrace to arrive
+			}
+		}
+		return
+	}
 	var id int64
 	var p *proc
 	for tid, q := range d.procs {
@@ -456,10 +509,14 @@ func (d *Daemon) applyNode(ctx context.Context, ev nodeEvent) {
 		}
 	}
 	if p == nil {
-		return // an attempt that already ended here; the next poll orders it stopped
+		if d.hub.expected(ev.r.Worker) {
+			d.early[ev.r.Worker] = ev // its start is still on the way to the loop: applied after it
+		}
+		return // otherwise an attempt that already ended here; the next poll orders it stopped
 	}
 	switch ev.r.Kind {
 	case "started":
+		p.seenLive = true
 		if ev.r.Commit != "" {
 			_ = d.DB.SetBase(ctx, id, ev.r.Commit) // the base the node checked out from
 		}
@@ -533,6 +590,9 @@ func (d *Daemon) stop(p *proc) {
 func (d *Daemon) fits(t db.Task, pid string, perNode map[string]int) bool {
 	node := d.Cfg.NodeOf(pid)
 	nd := d.Cfg.Nodes[node]
+	if len(nd.Repos) > 0 && !slices.Contains(nd.Repos, t.Repo) {
+		return false
+	}
 	for _, l := range t.Labels() {
 		if !slices.Contains(nd.Labels, l) {
 			return false
@@ -573,4 +633,11 @@ func (d *Daemon) cleanupRemote(ctx context.Context, t db.Task, r config.Repo) {
 	if node := d.onNode(t); node != "" {
 		d.hub.order(node, board.NodeCmd{Kind: "cleanup", Task: t.ID, Repo: t.Repo})
 	}
+}
+
+// goneFromNode: a connected node no longer runs this attempt, or never started it, and no
+// exit report came in the grace it was given (a report lost with a broken link, an order
+// lost with a dead poll, a node restarted faster than node_timeout).
+func (p *proc) goneFromNode(now time.Time) bool {
+	return (!p.missing.IsZero() && now.Sub(p.missing) > liveGrace) || (!p.seenLive && now.Sub(p.started) > startGrace)
 }

@@ -223,3 +223,19 @@ func TestCommittedSchemaIsCurrent(t *testing.T) {
 		t.Fatal("configs/swarm.schema.json is stale: run `make schema`")
 	}
 }
+
+// Where a provider runs: the node listing it; unlisted runs here unless this machine lists
+// its accounts, and then nowhere.
+func TestNodeOf(t *testing.T) {
+	c := &Config{Nodes: map[string]Node{"box": {Host: "local", Accounts: []string{"a"}}, "mac": {Host: "remote", Accounts: []string{"m"}}}}
+	if c.NodeOf("a") != "box" || c.NodeOf("m") != "mac" || c.NodeOf("b") != "" {
+		t.Fatalf("NodeOf: a=%q m=%q b=%q", c.NodeOf("a"), c.NodeOf("m"), c.NodeOf("b"))
+	}
+	if !c.Remote("mac") || c.Remote("box") || c.LocalNode() != "box" {
+		t.Fatal("local/remote")
+	}
+	plain := &Config{}
+	if plain.NodeOf("x") != "local" || plain.LocalNode() != "local" {
+		t.Fatal("a profile without nodes runs everything here")
+	}
+}

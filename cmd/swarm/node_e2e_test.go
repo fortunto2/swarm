@@ -244,3 +244,48 @@ func waitFor(t *testing.T, limit time.Duration, ok func() bool, msg string) {
 		time.Sleep(500 * time.Millisecond)
 	}
 }
+
+// gate_on = "node": a node lost mid-gate leaves the task verifying (no gate_fail, no gate
+// here, where the suite may not run), and the gate runs again on the node when it is back.
+func TestNodeGateWaitsForItsNode(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "gated")
+	coord, nodeProf, repo, _ := nodeBed(t, goodWorker, "node", "")
+	// the node's gate leaves a mark, then takes a while: time to pull the plug mid-gate
+	sh(t, coord, fmt.Sprintf(`sed -i.bak 's|^gate = .*|gate = ["touch %s", "sleep 4", "go test ./... -count=1"]|' swarm.toml`, mark))
+	before := sh(t, repo, "git rev-parse main")
+	addTask(t, coord, "two.go,two_test.go")
+	n, _ := startNode(t, nodeProf)
+	daemon := exec.Command(bin, "--profile", coord, "daemon")
+	var dlog bytes.Buffer
+	daemon.Stdout, daemon.Stderr = &dlog, &dlog
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() })
+	gated := func() bool {
+		return sqlite(t, coord, "SELECT count(*) FROM events WHERE type='gate_started'") != "0"
+	}
+	// the worker's own `swarm gate` touches the mark too; wait for the daemon's gate
+	waitFor(t, time.Minute, gated, "the gate never started")
+	time.Sleep(time.Second)
+	_ = n.Process.Kill()
+	_ = n.Wait()
+	waitFor(t, 40*time.Second, func() bool {
+		return sqlite(t, coord, "SELECT count(*) FROM events WHERE type='gate_again'") != "0"
+	}, "no gate_again after the node went away mid-gate")
+	if st := status(t, coord); !strings.Contains(st, "verifying    1") {
+		t.Fatalf("want the task still verifying while its node is away:\n%s\n%s", st, dlog.String())
+	}
+	if f := sqlite(t, coord, "SELECT count(*) FROM events WHERE type IN ('gate_fail','gate_pass')"); f != "0" {
+		t.Fatalf("a verdict was recorded without the node: %s events", f)
+	}
+	startNode(t, nodeProf)
+	waitFor(t, 2*time.Minute, func() bool { return strings.Contains(status(t, coord), "merged       1") },
+		"not merged after the node came back")
+	if sh(t, repo, "git rev-parse main") == before {
+		t.Fatal("main did not move")
+	}
+	if g := sqlite(t, coord, "SELECT count(*) FROM events WHERE type='gate_started' AND data LIKE '%\"node\":\"n1\"%'"); g != "2" {
+		t.Fatalf("want two gates, both on n1; got %s", g)
+	}
+}

@@ -34,11 +34,12 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		// gate_on = "node": the node that made the commit runs the suite, while it is there
+		// gate_on = "node": the node that made the commit runs the suite; while it is away
+		// the gate waits for it (the suite may not run here at all)
 		node := ""
 		if r.GateOn == "node" {
-			if n := d.onNode(t); n != "" && d.present(n) {
-				node = n
+			if node = d.onNode(t); node != "" && (!d.present(node) || time.Now().Before(d.regate[t.ID])) {
+				continue
 			}
 		}
 		if node == "" && !d.admitting() {
@@ -60,17 +61,13 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		go func() {
 			defer cancel()
 			v := gate.Static(gctx, r.Path, main, commit, claims, grants)
+			if v.OK && node != "" {
+				nv, ok := d.hub.gateOn(gctx, node, task, commit, r.GateTimeout.Duration+5*time.Minute)
+				d.results <- gateResult{taskID: id, commit: commit, v: nv, again: !ok}
+				return
+			}
 			if v.OK {
-				ran := false
-				if node != "" { // the node went away or never answered: the gate runs here
-					var nv gate.Verdict
-					if nv, ran = d.hub.gateOn(gctx, node, task, commit, r.GateTimeout.Duration+5*time.Minute); ran {
-						v = nv
-					}
-				}
-				if !ran {
-					v = runGate(gctx, r, dir, commit)
-				}
+				v = runGate(gctx, r, dir, commit)
 			}
 			d.results <- gateResult{taskID: id, commit: commit, v: v}
 		}()
@@ -101,6 +98,12 @@ func runGate(ctx context.Context, r config.Repo, dir, commit string) gate.Verdic
 func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 	delete(d.gating, r.taskID)
 	delete(d.gateCancel, r.taskID)
+	if r.again {
+		d.regate[r.taskID] = time.Now().Add(time.Minute)
+		d.DB.Event(ctx, "swarmd", r.taskID, "gate_again", map[string]string{"why": "no verdict from its node (gone, or could not run it)"})
+		return // still verifying: gated again on the node in a minute, or once it is back
+	}
+	delete(d.regate, r.taskID)
 	t, err := d.DB.GetTask(ctx, r.taskID)
 	if err != nil || t.Status != db.Verifying || t.ResultCommit.String != r.commit {
 		return // superseded: cancelled, or resubmitted while the gate ran

@@ -60,8 +60,9 @@ type Repo struct {
 	BranchPrefix string `toml:"branch_prefix" json:"branch_prefix,omitempty"`
 	GateReruns   *int   `toml:"gate_reruns" json:"gate_reruns,omitempty"`
 	// GateOn: where the gate commands run. "" or "coordinator": here, in a throwaway
-	// worktree; "node": on the node whose worker made the commit, while it is online (its
-	// machine may be the one with the cores, the toolchain or the data the suite needs).
+	// worktree; "node": on the node whose worker made the commit (its machine may be the
+	// one with the cores, the toolchain or the data the suite needs). Its gate waits while
+	// that node is away rather than run here, where the suite may not even start.
 	GateOn string `toml:"gate_on" json:"gate_on,omitempty"`
 
 	// Node profiles only: how this node keeps its copy in step with the coordinator's.
@@ -132,6 +133,7 @@ type Node struct {
 	Accounts   []string `toml:"accounts" json:"accounts,omitempty"`
 	Roles      []string `toml:"roles" json:"roles,omitempty"`
 	Labels     []string `toml:"labels" json:"labels,omitempty"`
+	Repos      []string `toml:"repos" json:"repos,omitempty"` // the repos it works on; empty = every one it has (a toolchain may be missing elsewhere)
 }
 
 // NodeSelf: in a node profile, who this node is and how it reaches the coordinator. The
@@ -403,6 +405,11 @@ func (c *Config) Validate() error {
 			}
 			owner[a] = n
 		}
+		for _, r := range nd.Repos {
+			if _, ok := c.Repos[r]; !ok {
+				bad("nodes.%s.repos: %q is not a repo of this profile", n, r)
+			}
+		}
 		for _, l := range nd.Labels {
 			if strings.TrimSpace(l) == "" || strings.ContainsAny(l, ", ") {
 				bad("nodes.%s.labels: %q is not a label (one word, no commas)", n, l)
@@ -514,13 +521,16 @@ func (c *Config) LocalNode() string {
 	return "local"
 }
 
-// NodeOf: the node a provider's account is logged in on; a provider no node lists runs
-// on the local one.
+// NodeOf: the node a provider's account is logged in on. A provider no node lists runs on
+// the local one, unless the local node lists its accounts: then it runs nowhere ("").
 func (c *Config) NodeOf(provider string) string {
 	for _, n := range slices.Sorted(maps.Keys(c.Nodes)) {
 		if slices.Contains(c.Nodes[n].Accounts, provider) {
 			return n
 		}
+	}
+	if local, ok := c.Nodes[c.LocalNode()]; ok && len(local.Accounts) > 0 {
+		return ""
 	}
 	return c.LocalNode()
 }

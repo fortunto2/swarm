@@ -231,6 +231,10 @@ func (d *Daemon) applyStart(ctx context.Context, s started) {
 		_ = d.DB.SetAttemptPid(ctx, s.p.log, s.p.cmd.Process.Pid)
 	}
 	d.procs[s.taskID] = s.p
+	if ev, ok := d.early[s.p.worker]; ok && s.p.node != "" {
+		delete(d.early, s.p.worker)
+		defer d.applyNode(ctx, ev) // a report that arrived before this start was applied
+	}
 	if len(d.Cfg.Hooks.OnStatus) > 0 {
 		d.statusHook(s.taskID, db.Running) // now the worktree exists for a board to label
 	}
@@ -321,6 +325,13 @@ func (d *Daemon) reap(ctx context.Context) {
 			d.Board.Revoke(p.token)
 			continue
 		}
+		if p.node != "" && d.present(p.node) && p.goneFromNode(now) {
+			select { // the node no longer runs it (or never started it) and no exit report came
+			case p.done <- errNodeLost:
+			default:
+			}
+			continue
+		}
 		if p.node != "" && !d.present(p.node) {
 			if d.hub.away(p.node) > 2*d.Cfg.Limits.NodeTimeout.Duration { // gone too long: the attempt is lost
 				select {
@@ -348,6 +359,11 @@ func (d *Daemon) reap(ctx context.Context) {
 			if t, err := d.DB.GetTask(ctx, id); err == nil && t.Status == db.Cancelled {
 				p.killed, p.killedAt = true, now
 				d.stop(p)
+				if p.node != "" { // its worktree and the branch it pushed go too
+					if r, err := d.repo(t.Repo); err == nil {
+						d.cleanupRemote(ctx, t, r)
+					}
+				}
 				d.Board.Revoke(p.token)
 				d.DB.EndAttempt(ctx, id, "crash") // closed now: no open attempt (and pid) left behind
 			}
@@ -370,6 +386,7 @@ func (d *Daemon) reap(ctx context.Context) {
 func (d *Daemon) release(id int64, p *proc) {
 	d.Board.Revoke(p.token)
 	delete(d.procs, id)
+	delete(d.early, p.worker)
 	if p.node != "" {
 		d.hub.forget(p.worker)
 	}

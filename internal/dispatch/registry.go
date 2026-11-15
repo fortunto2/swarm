@@ -83,7 +83,11 @@ func (d *Daemon) eligible(tier string) []string {
 		if !p.Can("worker") || (len(p.Tiers) > 0 && !slices.Contains(p.Tiers, tier)) {
 			continue
 		}
-		if _, here := d.adapters[id]; !here && !d.Cfg.Remote(d.Cfg.NodeOf(id)) {
+		node := d.Cfg.NodeOf(id)
+		if node == "" {
+			continue // logged in on no machine of this profile
+		}
+		if _, here := d.adapters[id]; !here && !d.Cfg.Remote(node) {
 			continue // a local provider whose CLI could not be set up, or was disabled
 		}
 		if st := d.reg.states[id]; st.State == "cooling" || st.State == "disabled" {

@@ -39,11 +39,12 @@ import (
 )
 
 const (
-	pollWait   = 25 // seconds a poll may be held by the coordinator
-	callLimit  = 60 * time.Second
-	admitEvery = 15 * time.Second
-	syncEvery  = 2 * time.Minute // fetch/publish/deliveries, besides when main moves
-	tailBytes  = 64 << 10
+	pollWait      = 25 // seconds a poll may be held by the coordinator
+	callLimit     = 60 * time.Second
+	admitEvery    = 15 * time.Second
+	syncEvery     = 2 * time.Minute // fetch/publish/deliveries, besides when main moves
+	tailBytes     = 64 << 10
+	transferLimit = 2 * time.Minute // one fetch or push; a stalled ssh must not hold an order forever
 )
 
 // Node is one `swarm node` process.
@@ -56,6 +57,7 @@ type Node struct {
 	Dial func(ctx context.Context) (io.ReadWriteCloser, string, error)
 
 	mu       sync.Mutex
+	syncing  sync.Mutex // one keepInStep at a time
 	up       *rpc.Client
 	token    string
 	session  string
@@ -240,7 +242,9 @@ func (n *Node) session1(ctx context.Context) error {
 			}
 			return err
 		}
-		n.keepInStep(ctx, orders.Mains)
+		if n.syncing.TryLock() { // off the poll loop: a stalled fetch must not stop the polls
+			go func() { defer n.syncing.Unlock(); n.keepInStep(ctx, orders.Mains) }()
+		}
 		for _, c := range orders.Cmds {
 			go n.do(ctx, c)
 		}
@@ -282,8 +286,10 @@ func (n *Node) call(ctx context.Context, op string, in, out any) error {
 }
 
 func (n *Node) report(ctx context.Context, r board.NodeReport) {
-	r.Session = n.session
-	for try := 0; try < 3; try++ {
+	for try := 0; try < 5; try++ {
+		n.mu.Lock()
+		r.Session = n.session // a reconnect between tries makes a new session
+		n.mu.Unlock()
 		if err := n.call(ctx, "node_report", r, nil); err == nil {
 			return
 		} else if ctx.Err() != nil {
@@ -423,6 +429,8 @@ func (n *Node) fetchMain(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(ctx, transferLimit)
+	defer cancel()
 	_, err = gitx.Transfer(ctx, r.Path, "fetch", "--quiet", r.Remote, "+"+v.MainRef+":refs/swarm/main/"+name)
 	return err
 }
@@ -562,6 +570,8 @@ func (n *Node) push(ctx context.Context, c board.NodeCmd) error {
 		return err
 	}
 	b := config.WorkerBranch(c.Task)
+	ctx, cancel := context.WithTimeout(ctx, transferLimit)
+	defer cancel()
 	_, err = gitx.Transfer(ctx, r.Path, "push", "--quiet", "--force", r.Remote, "refs/heads/"+b+":refs/heads/"+b)
 	return err
 }
@@ -573,13 +583,21 @@ func (n *Node) gate(ctx context.Context, c board.NodeCmd) {
 	verdict := func(vd gate.Verdict) {
 		n.report(context.WithoutCancel(ctx), board.NodeReport{Kind: "gate", Task: c.Task, Commit: c.Commit, Verdict: &vd})
 	}
+	// this machine could not run it: not a verdict on the work, the coordinator tries again
+	broken := func(why string, err error) {
+		n.Log.Warn("gate could not run", "task", c.Task, "why", why, "err", err)
+		n.report(context.WithoutCancel(ctx), board.NodeReport{Kind: "gate_error", Task: c.Task, Commit: c.Commit, Err: why + ": " + err.Error()})
+	}
 	if err != nil {
-		verdict(gate.Verdict{Stage: "gate", Reason: err.Error()})
+		broken("repo", err)
 		return
 	}
 	local := fmt.Sprintf("refs/swarm/gate/T%d", c.Task)
-	if _, err := gitx.Transfer(ctx, r.Path, "fetch", "--quiet", r.Remote, "+"+c.Ref+":"+local); err != nil {
-		verdict(gate.Verdict{Stage: "gate", Reason: "could not fetch the commit to gate", Tail: err.Error()})
+	fctx, cancel := context.WithTimeout(ctx, transferLimit)
+	_, err = gitx.Transfer(fctx, r.Path, "fetch", "--quiet", r.Remote, "+"+c.Ref+":"+local)
+	cancel()
+	if err != nil {
+		broken("fetch the commit", err)
 		return
 	}
 	dir := filepath.Join(n.Cfg.StatePath(), "gates", fmt.Sprintf("T%d-%.12s", c.Task, c.Commit))
@@ -587,7 +605,7 @@ func (n *Node) gate(ctx context.Context, c board.NodeCmd) {
 	_ = os.RemoveAll(dir)
 	_, _ = gitx.Run(ctx, r.Path, "worktree", "prune")
 	if _, err := gitx.Run(ctx, r.Path, "worktree", "add", "--quiet", "--detach", dir, c.Commit); err != nil {
-		verdict(gate.Verdict{Stage: "gate", Reason: "could not check out the submitted commit", Tail: err.Error()})
+		broken("check out the commit", err)
 		return
 	}
 	defer func() { _, _ = gitx.Run(context.WithoutCancel(ctx), r.Path, "worktree", "remove", "--force", dir) }()
@@ -596,6 +614,16 @@ func (n *Node) gate(ctx context.Context, c board.NodeCmd) {
 }
 
 func (n *Node) cleanup(ctx context.Context, task int64) {
+	n.mu.Lock()
+	for w, a := range n.running { // a cancelled task's worker may still be there
+		if a.task == task {
+			n.mu.Unlock()
+			n.kill(w)
+			<-a.done
+			n.mu.Lock()
+		}
+	}
+	n.mu.Unlock()
 	for name, r := range n.Cfg.Repos {
 		wt := worktree.For(n.Cfg.Profile.WorktreeRoot, name, task)
 		if _, err := os.Stat(wt.Path); err != nil {
@@ -612,6 +640,8 @@ func (n *Node) cleanup(ctx context.Context, task int64) {
 // and a rebase need it here); a repo with land = "ff" fast-forwards its main to it; branch
 // deliveries are fetched for the people on this machine; published refs are pushed.
 func (n *Node) keepInStep(ctx context.Context, mains map[string]string) {
+	ctx, cancel := context.WithTimeout(ctx, 3*transferLimit)
+	defer cancel()
 	periodic := time.Since(n.synced) > syncEvery
 	if periodic {
 		n.synced = time.Now()

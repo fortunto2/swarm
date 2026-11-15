@@ -51,7 +51,9 @@ type proc struct {
 	deadline   time.Time
 	leaseUntil time.Time
 	slot       int
-	killed     bool // the wall clock ran out; waiting for the group to die
+	seenLive   bool      // on a node: it has appeared in the node's live list (or reported started)
+	missing    time.Time // on a node: since when the live list no longer has it
+	killed     bool      // the wall clock ran out; waiting for the group to die
 	killedAt   time.Time
 	started    time.Time
 	log        string
@@ -61,6 +63,7 @@ type gateResult struct {
 	taskID int64
 	commit string
 	v      gate.Verdict
+	again  bool // no verdict: its node went away mid-gate; gated again when it is back
 }
 
 type Daemon struct {
@@ -92,8 +95,10 @@ type Daemon struct {
 	admit      admission     // the last answer of limits.admit; only the loop touches it
 	admitShown int           // what the log and events last said: 0 nothing yet, 1 admitted, 2 held
 	admitted   chan admission
-	hub        *hub           // nodes that dial in; nil when the profile has none
-	nodeEv     chan nodeEvent // their reports, applied on the loop
+	hub        *hub                 // nodes that dial in; nil when the profile has none
+	nodeEv     chan nodeEvent       // their reports, applied on the loop
+	early      map[string]nodeEvent // reports that beat their proc into d.procs (loop-owned)
+	regate     map[int64]time.Time  // node gates that got no verdict: not again before this
 }
 
 // admission: may new workers and gates start on this host now (limits.admit).
@@ -122,6 +127,8 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 		wake:       wake,
 		admitted:   make(chan admission, 1),
 		nodeEv:     make(chan nodeEvent, nodeEvents),
+		early:      map[string]nodeEvent{},
+		regate:     map[int64]time.Time{},
 	}
 	remote := false
 	for _, n := range cfg.Nodes {
@@ -131,8 +138,8 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 		dm.hub = newHub(dm)
 	}
 	for id, p := range cfg.Providers {
-		if cfg.Remote(cfg.NodeOf(id)) {
-			continue // its CLI and login are on that machine; the node builds the command
+		if node := cfg.NodeOf(id); node == "" || cfg.Remote(node) {
+			continue // its CLI and login are on another machine (a node builds the command there)
 		}
 		a, err := provider.New(id, p, cfg.Profile)
 		if err != nil {
@@ -353,6 +360,13 @@ func (d *Daemon) reconcile(ctx context.Context) error {
 	orphans, err := d.DB.OpenAttemptPids(ctx, d.Node)
 	if err != nil {
 		return err
+	}
+	if d.Node != "local" { // attempts recorded before the local node had a name
+		old, err := d.DB.OpenAttemptPids(ctx, "local")
+		if err != nil {
+			return err
+		}
+		maps.Copy(orphans, old)
 	}
 	for id, o := range orphans {
 		pgid := o.Pid
