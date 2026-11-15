@@ -54,7 +54,7 @@ Found by reading the PRD section by section against the code. One was a shipped 
 
 | What | Where | Why there |
 |---|---|---|
-| Subscriptions (accounts): kind, family, slots, tiers, models, **roles**, **priority**, **daily budget** | `swarm.toml` of the profile, `[providers.<id>]` | declared, reviewed as a diff; the profile is the world, so solo and Epiphan never share an account by construction |
+| Subscriptions (accounts): kind, family, slots, tiers, models, **roles**, **priority**, **daily budget** | `swarm.toml` of the profile, `[providers.<id>]` | declared, reviewed as a diff; the profile is the world, so a personal and a work profile never share an account by construction |
 | Machines: which accounts are logged in there, max workers, roles | `swarm.toml`, `[nodes.<id>]` | same |
 | Live state of each subscription: ok / cooling / disabled, until when, why | profile db, table `providers` | changes by the minute; only swarmd writes it |
 | Spend: tokens and dollars per attempt | profile db, `attempts` | measured from the CLI's final event |
@@ -82,7 +82,7 @@ integration task); codex adapter, cross-family review, 429/quota patterns from c
 cooling with backoff and a probe run, escalation to a higher tier on attempt 3, overflow to
 `claude-api` with a $ cap; containers and egress allowlist; `swarm report`, `logs`, `stop`,
 `pause`, log retention; the harness-core contract (runs.jsonl, `task item --done`, limits);
-the solo and Epiphan profiles with `merge = "pr"`.
+the personal and work profiles, the work one with `merge = "pr"`.
 
 Pass 2 outcome: steps 12-18 landed with tests. Two of those tests were first written so
 they passed without the feature (the overlap test raced on its own lock; caught by
