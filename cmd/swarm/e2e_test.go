@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -864,6 +865,141 @@ func TestSessionMCPWithoutDaemon(t *testing.T) {
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "swarm_status"})
 	if err != nil || !res.IsError || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, "daemon_down") {
 		t.Fatalf("want a daemon_down tool error, got %v %+v", err, res)
+	}
+}
+
+// answerWorker writes the selftest's answer file, commits it and reports done.
+func answerWorker(answer string) string {
+	return fmt.Sprintf(`printf '%%s\n' %s > answer.txt
+git add answer.txt && git commit -qm "T$SWARM_TASK_ID: answer" --trailer "Swarm-Task: $SWARM_TASK_ID"
+swarm board done "$(git rev-parse HEAD)"
+`, answer)
+}
+
+// runSelftest runs `swarm selftest` with its temp dirs made under tmp, so a test can see
+// what is left behind.
+func runSelftest(t *testing.T, prof, tmp string, args ...string) (string, error) {
+	t.Helper()
+	c := exec.Command(bin, append([]string{"--profile", prof, "selftest", "--timeout", "1m"}, args...)...)
+	c.Env = append(os.Environ(), "TMPDIR="+tmp)
+	done := make(chan struct{})
+	var out []byte
+	var err error
+	go func() { out, err = c.CombinedOutput(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Minute):
+		_ = c.Process.Kill()
+		<-done
+		t.Fatalf("selftest did not finish\n%s", out)
+	}
+	t.Logf("selftest %v: %v\n%s", args, err, out)
+	return string(out), err
+}
+
+// selftest proves the loop on the profile's provider in a temp dir and leaves nothing behind:
+// not in the temp dir, not in the profile's repo, not in the profile's state.
+func TestSelftestOK(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, answerWorker("42"), 4)
+	before := sh(t, repo, "git rev-parse main")
+	tmp := t.TempDir()
+	out, err := runSelftest(t, prof, tmp)
+	if err != nil || !strings.HasPrefix(out, "selftest ok: mock merged in ") || strings.Count(out, "\n") != 1 {
+		t.Fatalf("want one ok line: %v\n%s", err, out)
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Fatalf("temp dir left behind: %v", left)
+	}
+	if sh(t, repo, "git rev-parse main") != before || strings.Contains(sh(t, repo, "git worktree list"), "\n") {
+		t.Fatal("selftest touched the profile's repo")
+	}
+	if _, err := os.Stat(filepath.Join(prof, "state")); err == nil {
+		t.Fatal("selftest wrote state into the profile it tests")
+	}
+}
+
+// The profile's own daemon keeps running: selftest has its own state, database, lock and
+// socket, and the daemon it runs next to is still serving afterwards.
+func TestSelftestBesideTheProfilesDaemon(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, answerWorker("42"), 4)
+	daemon := exec.Command(bin, "--profile", prof, "daemon")
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- daemon.Wait() }()
+	defer func() { _ = daemon.Process.Signal(os.Interrupt); <-exited }()
+	waitSocket(t, prof)
+	out, err := runSelftest(t, prof, t.TempDir())
+	if err != nil || !strings.HasPrefix(out, "selftest ok") {
+		t.Fatalf("selftest next to a running daemon: %v\n%s", err, out)
+	}
+	select {
+	case err := <-exited:
+		t.Fatalf("the profile's daemon exited during selftest: %v", err)
+	default:
+	}
+	if _, err := os.Stat(dispatch.SocketPath(filepath.Join(prof, "state"))); err != nil {
+		t.Fatalf("the profile's daemon lost its socket: %v", err)
+	}
+}
+
+// A worker whose answer the gate refuses: exit 1, and the line says it was the gate.
+func TestSelftestGateFailure(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, answerWorker("41"), 4)
+	tmp := t.TempDir()
+	out, err := runSelftest(t, prof, tmp)
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 1 {
+		t.Fatalf("want exit 1, got %v\n%s", err, out)
+	}
+	if !strings.HasPrefix(out, "selftest FAILED: blocked: ") || !strings.Contains(out, "gate_fail") ||
+		!strings.Contains(out, "answer.txt") {
+		t.Fatalf("the line does not name the gate failure:\n%s", out)
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Fatalf("temp dir left behind after a failure: %v", left)
+	}
+}
+
+// A failure before the loop starts is a selftest line too, and it names what the profile has.
+func TestSelftestSetupFailure(t *testing.T) {
+	prof := profile(t, testbed(t), answerWorker("42"), 4)
+	tmp := t.TempDir()
+	out, err := runSelftest(t, prof, tmp, "--provider", "nope")
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 1 || !strings.HasPrefix(out, `selftest FAILED: setup: profile has no provider "nope" (it has mock)`) {
+		t.Fatalf("want exit 1 and a setup line, got %v\n%s", err, out)
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Fatalf("temp dir left behind: %v", left)
+	}
+}
+
+// --keep leaves the temp dir and says where: the repo with the merged answer, the profile,
+// the daemon's log.
+func TestSelftestKeep(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, answerWorker("42"), 4)
+	out, err := runSelftest(t, prof, t.TempDir(), "--keep")
+	if err != nil || !strings.HasPrefix(out, "selftest ok") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	_, kept, found := strings.Cut(out, "kept: ")
+	kept = strings.TrimSpace(kept)
+	if !found || kept == "" {
+		t.Fatalf("no kept path printed:\n%s", out)
+	}
+	if got := sh(t, filepath.Join(kept, "repo"), "git show main:answer.txt"); got != "42" {
+		t.Fatalf("kept repo's main holds %q", got)
+	}
+	for _, f := range []string{"swarm.toml", "daemon.log"} {
+		if _, err := os.Stat(filepath.Join(kept, f)); err != nil {
+			t.Errorf("kept dir lacks %s: %v", f, err)
+		}
 	}
 }
 

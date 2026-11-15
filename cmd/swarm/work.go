@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"os"
 	"os/signal"
@@ -120,31 +121,40 @@ func daemonCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			release, err := dispatch.Lock(c.StatePath()) // before the database is touched
-			if err != nil {
-				return err
-			}
-			defer release()
-			d, err := db.Open(c.DBPath())
-			if err != nil {
-				return err
-			}
-			defer d.Close()
-			self, err := os.Executable()
-			if err != nil {
-				return err
-			}
-			dm, err := dispatch.New(c, d, self)
-			if err != nil {
-				return err
-			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return dm.Run(ctx, untilIdle)
+			return runDaemon(ctx, c, untilIdle, nil)
 		},
 	}
 	c.Flags().BoolVar(&untilIdle, "until-idle", false, "exit when no run has work left and no worker is alive")
 	return c
+}
+
+// runDaemon is the daemon loop on a loaded profile: `daemon` runs it, `selftest` runs the
+// same thing on its temp profile. logTo nil leaves the daemon's log on stderr.
+func runDaemon(ctx context.Context, c *config.Config, untilIdle bool, logTo io.Writer) error {
+	release, err := dispatch.Lock(c.StatePath()) // before the database is touched
+	if err != nil {
+		return err
+	}
+	defer release()
+	d, err := db.Open(c.DBPath())
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	dm, err := dispatch.New(c, d, self)
+	if err != nil {
+		return err
+	}
+	if logTo != nil {
+		dm.Log = slog.New(slog.NewJSONHandler(logTo, nil))
+	}
+	return dm.Run(ctx, untilIdle)
 }
 
 func mcpCmd() *cobra.Command {

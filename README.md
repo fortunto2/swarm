@@ -32,7 +32,7 @@ week of quota by Wednesday. `swarm` is the dull part that makes many agents usab
 ## Quick start
 
 Full guide, written so an agent can follow it in a fresh session: [`docs/setup.md`](docs/setup.md)
-(install, a profile, the daemon under launchd, MCP for sessions, the first task).
+(install, a profile, the daemon under launchd, MCP for sessions, `swarm selftest`, the first task).
 
 ```sh
 go install github.com/fortunto2/swarm/cmd/swarm@latest
@@ -42,6 +42,7 @@ mkdir -p ~/swarm-profiles/me && cp configs/swarm.example.toml ~/swarm-profiles/m
 export SWARM_PROFILE=~/swarm-profiles/me
 swarm check            # validates the profile, lists every problem at once
 swarm init             # creates the profile's SQLite
+swarm selftest         # one task through a real provider, gate and ff merge, on a throwaway repo
 
 swarm task add --repo app --title "add Two" \
   --spec "add func Two() int returning 2, with a test" \

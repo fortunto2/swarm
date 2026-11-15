@@ -116,7 +116,45 @@ The server starts even while the daemon is down and answers `daemon_down` then.
 Optional: the skill in [`skills/swarm/SKILL.md`](../skills/swarm/SKILL.md) teaches an agent
 how to write tasks a gate can judge. Symlink it into `~/.claude/skills/swarm`.
 
-## 5. First task: prove the loop
+## 5. Prove the loop: `swarm selftest`
+
+```sh
+swarm --profile <dir> selftest                       # the first enabled worker by priority
+swarm --profile <dir> selftest --provider claude-me  # a given one; also --timeout 10m, --keep
+```
+
+It runs one task (`answer.txt` holds 42) through a real provider, the gate and an ff merge,
+on a throwaway git repo in a temp dir, and removes the dir after. None of your repos is
+touched, and it works next to the profile's own daemon: the temp profile has its own state,
+database and lock. It carries the chosen provider, your nodes, safety, sandbox and secret
+helpers (secrets as `secret:`/`env:` references, never values); hooks, `notify` and extra
+MCP servers stay out. The worker gets one attempt, on the cheapest tier the provider takes.
+It runs with your shell's environment, not launchd's: a PATH only the daemon lacks still
+shows up in its first real task.
+
+Exit 0 and one line on a pass (the dollars are the CLI's list-price figure, see Budget in
+the README), exit 1 and a reason otherwise:
+
+```
+selftest ok: <provider> merged in <duration>, $<cost>
+selftest FAILED: blocked: attempt 1: gate_fail; gate: test "$(cat answer.txt)" = 42: exit 1
+```
+
+A FAILED line is `<status>: <reason>`, the reason being what swarm recorded:
+
+| Line says | Means |
+|---|---|
+| `setup: no provider to test: …` | nothing ran: no enabled worker this node may run; the reason per provider follows |
+| `ready: provider X disabled: not logged in` | that provider's CLI has no login: `CLAUDE_CONFIG_DIR=<its config_dir> claude`, then `/login` |
+| `blocked: crash: worker exited without report_done …` | the worker died three times without a word; rerun with `--keep` and read `state/attempts/*/log.jsonl` |
+| `blocked: crash: exec: "claude": executable file not found in $PATH` | the CLI is not on this shell's PATH |
+| `blocked: attempt 1: gate_fail; …` | the worker ran and submitted, but its answer failed the gate: look at the model, its tier, the prompt |
+| `blocked: the model refused this task: …` | the provider's safeguards stopped it |
+| `running: no result within 10m0s (--timeout)` | the loop had not finished when the clock ran out |
+
+`--keep` leaves the dir (repo, `swarm.toml`, `state/`, `daemon.log`) and prints its path.
+
+Then a real task in your own repo:
 
 ```sh
 swarm --profile <dir> task add --repo app --title "add a tiny function" \
@@ -124,7 +162,6 @@ swarm --profile <dir> task add --repo app --title "add a tiny function" \
   --spec "add func Tiny() int returning 1 in pkg/tiny.go, with a test" \
   --acceptance "the repo's gate passes and the test exists"
 swarm --profile <dir> status          # ready -> running -> verifying -> merging -> merged
-git -C ~/code/app log -1 --format='%an %s'   # author swarm-<provider>-T1-1
 ```
 
 If it blocks: `swarm --profile <dir> report` and the task's notes say why (often the task:

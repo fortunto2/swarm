@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -157,10 +158,15 @@ func main() {
 		},
 	})
 	root.AddCommand(reportCmd())
-	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd())
+	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd(), selftestCmd())
 
 	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "swarm:", err)
+		if !errors.Is(err, errReported) {
+			fmt.Fprintln(os.Stderr, "swarm:", err)
+		}
 		os.Exit(1)
 	}
 }
+
+// errReported: the command already printed why it failed; exit 1 without saying it twice.
+var errReported = errors.New("failure reported")

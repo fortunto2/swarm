@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -134,6 +136,78 @@ func TestSchemaMatchesLoad(t *testing.T) {
 	}
 	if err := rs.Validate(asJSON(strings.Replace(string(example), `task_wall_clock = "45m"`, `task_wall_clock = "soon"`, 1))); err == nil {
 		t.Fatal("schema accepted a duration Load cannot parse")
+	}
+}
+
+// The selftest profile is written to disk and loaded like any other: it keeps one provider
+// with its secrets as references, the nodes that may run it, the safety setting, and
+// nothing that reaches outside its temp dir.
+func TestSelftestProfileRoundTrips(t *testing.T) {
+	src := strings.Replace(good, "[nodes.laptop]", `[providers.mock-b]
+kind = "mock"
+family = "mock"
+slots = 1
+command = ["/bin/true"]
+
+[hooks]
+after_merge = ["echo merged"]
+
+[mcp.index]
+command = "index"
+tools = ["search"]
+
+[nodes.other]
+host = "ssh:box"
+accounts = ["mock-b"]
+
+[nodes.laptop]`, 1)
+	src = strings.Replace(src, `accounts = ["claude-a"]`, `accounts = ["claude-a", "mock-b"]`, 1)
+	src = strings.Replace(src, `worktree_root = "/tmp/swarm-wt"`, "worktree_root = \"/tmp/swarm-wt\"\nsafety = \"strict\"\nnotify = \"say\"\nsecret_cmd = [\"keys\", \"get\"]", 1)
+	c, err := Load(write(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	st, err := c.Selftest("claude-a", dir, filepath.Join(dir, "repo"), 7*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if err := st.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"secret:kimi"`) {
+		t.Fatalf("the key reference did not survive encoding:\n%s", buf.String())
+	}
+	if err := os.WriteFile(filepath.Join(dir, "swarm.toml"), []byte(buf.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("the encoded selftest profile does not load: %v\n%s", err, buf.String())
+	}
+	if len(got.Providers) != 1 || got.Providers["claude-a"].Env["ANTHROPIC_AUTH_TOKEN"] != "secret:kimi" {
+		t.Fatalf("providers: %+v", got.Providers)
+	}
+	if _, ok := got.Nodes["other"]; ok || !slices.Equal(got.Nodes["laptop"].Accounts, []string{"claude-a"}) {
+		t.Fatalf("nodes: %+v", got.Nodes)
+	}
+	if !got.Strict() || !slices.Equal(got.Profile.SecretCmd, []string{"keys", "get"}) {
+		t.Fatalf("safety or secret_cmd not carried: %+v", got.Profile)
+	}
+	if got.Profile.Notify != "" || len(got.Hooks.AfterMerge) != 0 || len(got.MCP) != 0 {
+		t.Fatalf("something reaching outside the temp dir came along: %+v %+v %+v", got.Profile, got.Hooks, got.MCP)
+	}
+	r := got.Repos[SelftestRepo]
+	if len(got.Repos) != 1 || r.Merge != "ff" || !slices.Equal(r.Gate, SelftestGate) || r.Path != filepath.Join(dir, "repo") {
+		t.Fatalf("repos: %+v", got.Repos)
+	}
+	if got.Limits.MaxWorkers != 1 || got.Limits.TaskWallClock.Duration != 7*time.Minute ||
+		!strings.HasPrefix(got.StatePath(), dir) || !strings.HasPrefix(got.Profile.WorktreeRoot, dir) {
+		t.Fatalf("limits or paths: %+v %+v", got.Limits, got.Profile)
+	}
+	if _, err := c.Selftest("nope", dir, dir, time.Minute); err == nil {
+		t.Fatal("an unknown provider was accepted")
 	}
 }
 
