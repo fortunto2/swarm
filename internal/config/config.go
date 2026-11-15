@@ -36,7 +36,7 @@ type Profile struct {
 	StateDir     string   `toml:"state_dir" json:"state_dir,omitempty"`         // relative to the profile dir unless absolute
 	WorktreeRoot string   `toml:"worktree_root" json:"worktree_root,omitempty"` // outside every repo, never <repo>/.swarm/wt
 	Notify       string   `toml:"notify" json:"notify,omitempty"`               // command that takes the message as last arg
-	Harness      string   `toml:"harness" json:"harness,omitempty"`             // harness-core profile dir, for runs.jsonl
+	Harness      string   `toml:"harness" json:"harness,omitempty"`             // accepted so older profiles still load; nothing reads it (the harness contract goes through hooks, docs/hardening.md)
 	SecretCmd    []string `toml:"secret_cmd" json:"secret_cmd,omitempty"`       // get: argv + name, value on stdout (e.g. solo secret get)
 	SecretExec   []string `toml:"secret_exec" json:"secret_exec,omitempty"`     // exec: argv + NAME=ENV pairs + -- cmd (e.g. solo secret exec)
 	Redact       []string `toml:"redact" json:"redact,omitempty"`               // filter for text swarm stores or forwards (e.g. secret_guard.py filter)

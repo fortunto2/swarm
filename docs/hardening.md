@@ -81,8 +81,13 @@ Still open, by phase (not in this pass): the lead and its tools (`create_tasks`,
 integration task); codex adapter, cross-family review, 429/quota patterns from config,
 cooling with backoff and a probe run, escalation to a higher tier on attempt 3, overflow to
 `claude-api` with a $ cap; containers and egress allowlist; `swarm report`, `logs`, `stop`,
-`pause`, log retention; the harness-core contract (runs.jsonl, `task item --done`, limits);
+`pause`, log retention;
 the personal and work profiles, the work one with `merge = "pr"`.
+
+The harness contract (a run noted on its registry item, the account's limits read before a
+start) needed no code in swarm: `[hooks] on_status` calls the profile's own registry tool, and
+`limits.admit` runs the profile's own limits check. A core that knew one harness's file format
+would be a core for one harness, so the `harness` key stays accepted and unused.
 
 Pass 2 outcome: steps 12-18 landed with tests. Two of those tests were first written so
 they passed without the feature (the overlap test raced on its own lock; caught by
