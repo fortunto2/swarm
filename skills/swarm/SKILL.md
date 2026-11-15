@@ -65,8 +65,8 @@ Check `swarm status` before claiming anything is done. `merged` means the gate p
 asked a question. Read why before retrying:
 
 ```sh
-sqlite3 "$SWARM_PROFILE/state/swarm.db" \
-  "SELECT kind, body FROM notes WHERE task_id=<id> ORDER BY id DESC LIMIT 4"
+swarm task notes <id>              # gate failures, plans, questions, newest first
+swarm task list --status blocked
 sqlite3 "$SWARM_PROFILE/state/swarm.db" \
   "SELECT type, data FROM events WHERE task_id=<id> ORDER BY id DESC LIMIT 10"
 ```

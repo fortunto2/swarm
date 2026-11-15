@@ -10,7 +10,7 @@ Setting it up for yourself: [`docs/setup.md`](docs/setup.md). Using it from a se
 
 | Package | What |
 |---|---|
-| `cmd/swarm` | CLI (cobra): check, init, status, providers, report, schema, task add/retry/cancel, daemon, mcp, board, gate. `e2e_test.go` drives the real binary with scripted (mock) workers |
+| `cmd/swarm` | CLI (cobra): check, init, status, providers, report, schema, task add/list/notes/retry/cancel, daemon, mcp, board, gate. `e2e_test.go` drives the real binary with scripted (mock) workers |
 | `internal/config` | `swarm.toml` load, validation (every problem at once), JSON Schema (`make schema`) |
 | `internal/db` | SQLite, the only writer. `state.go` is the task state machine: every status change goes through `Move`, guarded by the expected status. Migrations are append-only |
 | `internal/dispatch` | the daemon loop: reap, promote, schedule, gate, merge; provider registry; hooks; reconcile after a restart |

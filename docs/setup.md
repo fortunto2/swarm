@@ -164,7 +164,7 @@ swarm --profile <dir> task add --repo app --title "add a tiny function" \
 swarm --profile <dir> status          # ready -> running -> verifying -> merging -> merged
 ```
 
-If it blocks: `swarm --profile <dir> report` and the task's notes say why (often the task:
+If it blocks: `swarm --profile <dir> task notes <id>` (and `report` for the week) says why (often the task:
 no files named, an acceptance the gate cannot see, a file it needs not yet committed).
 `swarm task retry <id>` / `swarm task cancel <id>` (daemon running).
 

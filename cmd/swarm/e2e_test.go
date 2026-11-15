@@ -189,6 +189,13 @@ git add -A && git commit -qm "T$SWARM_TASK_ID: quiet a test" --allow-empty
 	if sh(t, repo, "git rev-parse main") != before {
 		t.Fatal("main moved on a weakened test")
 	}
+	// the same answers the lead's MCP tools give, from a terminal with the daemon gone
+	if out, err := swarm(t, prof, 30*time.Second, "task", "list", "--status", "blocked"); err != nil || !strings.Contains(out, "T1 ") {
+		t.Fatalf("task list --status blocked: %v\n%s", err, out)
+	}
+	if out, err := swarm(t, prof, 30*time.Second, "task", "notes", "T1"); err != nil || !strings.Contains(out, "switched off") {
+		t.Fatalf("task notes T1 lacks the gate's reason: %v\n%s", err, out)
+	}
 }
 
 // A worker that dies without reporting is the infrastructure's failure: three of them and

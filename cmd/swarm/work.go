@@ -106,7 +106,7 @@ func taskCmd() *cobra.Command {
 		_ = add.MarkFlagRequired(n)
 	}
 	t := &cobra.Command{Use: "task", Short: "Tasks"}
-	t.AddCommand(add, taskOp("retry", "swarm_retry_task", "Give a blocked task a fresh start"),
+	t.AddCommand(add, taskListCmd(), taskNotesCmd(), taskOp("retry", "swarm_retry_task", "Give a blocked task a fresh start"),
 		taskOp("cancel", "swarm_cancel_task", "Cancel a task; a running worker is stopped"))
 	return t
 }
