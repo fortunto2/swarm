@@ -341,8 +341,8 @@ func (n *Node) hello(ctx context.Context) error {
 	n.mu.Lock()
 	n.session, n.welcome, n.adapters = w.Session, w, adapters
 	n.mu.Unlock()
-	for _, id := range w.Cleanup {
-		n.cleanup(ctx, id)
+	for _, ref := range w.Cleanup {
+		n.cleanup(ctx, ref.Repo, ref.Task)
 	}
 	return nil
 }
@@ -356,9 +356,9 @@ func (n *Node) live() []string {
 var wtName = regexp.MustCompile(`^(.+)--T(\d+)$`)
 
 // worktrees: tasks this node holds a worktree for, so the coordinator can say which can go.
-func (n *Node) worktrees() []int64 {
+func (n *Node) worktrees() []board.TaskRef {
 	es, _ := os.ReadDir(n.Cfg.Profile.WorktreeRoot)
-	var out []int64
+	var out []board.TaskRef
 	for _, e := range es {
 		m := wtName.FindStringSubmatch(e.Name())
 		if m == nil {
@@ -368,7 +368,7 @@ func (n *Node) worktrees() []int64 {
 			continue
 		}
 		if id, err := strconv.ParseInt(m[2], 10, 64); err == nil {
-			out = append(out, id)
+			out = append(out, board.TaskRef{Repo: m[1], Task: id})
 		}
 	}
 	return out
@@ -426,7 +426,7 @@ func (n *Node) do(ctx context.Context, c board.NodeCmd) {
 	case "gate":
 		n.gate(ctx, c)
 	case "cleanup":
-		n.cleanup(ctx, c.Task)
+		n.cleanup(ctx, c.Repo, c.Task)
 	case "status":
 		n.statusHooks(ctx, c)
 	default:
@@ -688,7 +688,7 @@ func (n *Node) statusHooks(ctx context.Context, c board.NodeCmd) {
 	}
 }
 
-func (n *Node) cleanup(ctx context.Context, task int64) {
+func (n *Node) cleanup(ctx context.Context, repo string, task int64) {
 	n.mu.Lock()
 	for w, a := range n.running { // a cancelled task's worker may still be there
 		if a.task == task {
@@ -699,16 +699,17 @@ func (n *Node) cleanup(ctx context.Context, task int64) {
 		}
 	}
 	n.mu.Unlock()
-	for name, r := range n.Cfg.Repos {
-		wt := worktree.For(n.Cfg.Profile.WorktreeRoot, name, task)
-		if _, err := os.Stat(wt.Path); err != nil {
-			continue
-		}
+	r, ok := n.Cfg.Repos[repo]
+	if !ok {
+		return
+	}
+	wt := worktree.For(n.Cfg.Profile.WorktreeRoot, repo, task)
+	if _, err := os.Stat(wt.Path); err == nil {
 		if err := worktree.Remove(ctx, r.Path, wt); err != nil {
 			n.Log.Warn("cleanup", "task", task, "err", err)
 		}
-		_, _ = gitx.Run(ctx, r.Path, "update-ref", "-d", fmt.Sprintf("refs/swarm/gate/T%d", task))
 	}
+	_, _ = gitx.Run(ctx, r.Path, "update-ref", "-d", fmt.Sprintf("refs/swarm/gate/T%d", task))
 }
 
 // keepInStep: the coordinator's main is fetched when it moves (a worker's `swarm gate`

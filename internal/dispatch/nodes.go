@@ -127,9 +127,10 @@ func (h *hub) Hello(ctx context.Context, in board.NodeHello) (board.NodeWelcome,
 		w.Repos[name] = board.RepoView{MainRef: r.MainRef(), Merge: r.Merge, Prefix: r.BranchPrefix, Gate: r.Gate,
 			GateTimeout: r.GateTimeout, Reruns: r.Reruns()}
 	}
-	for _, id := range in.Worktrees {
-		if t, err := h.d.DB.GetTask(ctx, id); err == nil && (t.Status == db.Merged || t.Status == db.Cancelled) {
-			w.Cleanup = append(w.Cleanup, id)
+	for _, ref := range in.Worktrees {
+		t, err := h.d.DB.GetTask(ctx, ref.Task)
+		if err == nil && t.Repo == ref.Repo && (t.Status == db.Merged || t.Status == db.Cancelled) {
+			w.Cleanup = append(w.Cleanup, ref)
 		}
 	}
 	h.mu.Lock()

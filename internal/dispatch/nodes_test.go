@@ -189,3 +189,32 @@ func TestGateWithoutVerdictBlocksAfterMaxAgain(t *testing.T) {
 		t.Fatalf("the block does not carry the node's reason: %+v", notes)
 	}
 }
+
+// A node may delete a worktree only of a finished task of that repo: another profile
+// sharing its worktree root can hold <otherrepo>--T<same id> (seen live: an old profile's
+// harness--T1 went because this coordinator's T1, an app task, had merged).
+func TestHelloCleansOnlyTheTasksOwnRepo(t *testing.T) {
+	sdb, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+	ctx := context.Background()
+	run, _ := sdb.CreateRun(ctx, "x", "", "base")
+	id, _ := sdb.AddTask(ctx, db.NewTask{RunID: run, Repo: "app", Title: "T", Spec: "s", Acceptance: "a", Tier: "B"})
+	if err := sdb.Move(ctx, "t", id, []db.Status{db.Ready}, db.Cancelled, db.Patch{}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Repos: map[string]config.Repo{"app": {}}, Nodes: map[string]config.Node{"mac": {Host: "remote", Accounts: []string{"m"}}}}
+	d := &Daemon{Cfg: cfg, DB: sdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	d.hub = newHub(d)
+	d.nodeEv = make(chan nodeEvent, 4)
+	w, err := d.hub.Hello(ctx, board.NodeHello{Name: "mac", Root: "/wt", Repos: []string{"app"},
+		Worktrees: []board.TaskRef{{Repo: "harness", Task: id}, {Repo: "app", Task: id}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Cleanup) != 1 || w.Cleanup[0] != (board.TaskRef{Repo: "app", Task: id}) {
+		t.Fatalf("cleanup = %+v, want only app T%d", w.Cleanup, id)
+	}
+}
