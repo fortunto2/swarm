@@ -59,6 +59,11 @@ func main() {
 					fmt.Fprintln(cmd.OutOrStdout(), w)
 				}
 			}
+			for _, id := range slices.Sorted(maps.Keys(c.Providers)) {
+				if c.NodeOf(id) == "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "warn: provider %s is in no node's accounts while %s lists its own: it never runs\n", id, c.LocalNode())
+				}
+			}
 			return nil
 		},
 	})

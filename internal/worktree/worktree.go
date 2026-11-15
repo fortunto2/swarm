@@ -64,8 +64,20 @@ func Refresh(ctx context.Context, path, base string) (moved bool, err error) {
 	if err != nil || dirty != "" {
 		return false, err
 	}
+	for _, p := range []string{"rebase-merge", "rebase-apply"} { // a rebase a worker left mid-way is its own
+		if gp, err := gitx.Run(ctx, path, "rev-parse", "--git-path", p); err == nil {
+			if !filepath.IsAbs(gp) {
+				gp = filepath.Join(path, gp)
+			}
+			if _, err := os.Stat(gp); err == nil {
+				return false, nil
+			}
+		}
+	}
 	if _, err := gitx.Run(ctx, path, "rebase", "--quiet", base); err != nil {
-		_, _ = gitx.Run(ctx, path, "rebase", "--abort")
+		if _, aerr := gitx.Run(context.WithoutCancel(ctx), path, "rebase", "--abort"); aerr != nil {
+			return false, fmt.Errorf("rebase onto %.12s failed and could not be undone: %w", base, aerr)
+		}
 		return false, nil
 	}
 	return true, nil

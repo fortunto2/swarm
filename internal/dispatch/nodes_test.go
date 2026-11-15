@@ -3,6 +3,11 @@ package dispatch
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"io"
+	"log/slog"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,7 +114,7 @@ func TestStaleGateVerdictIsNotDelivered(t *testing.T) {
 	d := &Daemon{Cfg: &config.Config{}}
 	h := newHub(d)
 	h.nodes["mac"] = &nodeState{session: "s1", seen: time.Now(), wake: make(chan struct{}, 1)}
-	ch := make(chan *gate.Verdict, 1)
+	ch := make(chan gateMsg, 1)
 	h.gates[7] = gateWait{commit: "bbb", ch: ch}
 	ok := &gate.Verdict{OK: true}
 	_ = h.Report(context.Background(), board.NodeReport{Session: "s1", Kind: "gate", Task: 7, Commit: "aaa", Verdict: ok})
@@ -119,12 +124,68 @@ func TestStaleGateVerdictIsNotDelivered(t *testing.T) {
 	default:
 	}
 	_ = h.Report(context.Background(), board.NodeReport{Session: "s1", Kind: "gate", Task: 7, Commit: "bbb", Verdict: ok})
-	if v := <-ch; v == nil || !v.OK {
+	if m := <-ch; m.v == nil || !m.v.OK {
 		t.Fatal("the verdict for the right commit did not arrive")
 	}
 	h.gates[7] = gateWait{commit: "ccc", ch: ch}
 	_ = h.Report(context.Background(), board.NodeReport{Session: "s1", Kind: "gate_error", Task: 7, Commit: "ccc", Err: "fetch"})
-	if v := <-ch; v != nil {
-		t.Fatal("a gate the node could not run came back as a verdict")
+	if m := <-ch; m.v != nil || m.why != "fetch" {
+		t.Fatalf("a gate the node could not run came back as a verdict, or without its reason: %+v", m)
+	}
+}
+
+// Status orders to a node collapse to the latest per task: a node away for hours does not
+// replay every move, and a board cannot end on an older one.
+func TestStatusOrdersCollapsePerTask(t *testing.T) {
+	d := &Daemon{Cfg: &config.Config{}}
+	h := newHub(d)
+	h.nodes["mac"] = &nodeState{wake: make(chan struct{}, 1)}
+	for _, st := range []string{"running", "verifying", "merging"} {
+		h.order("mac", board.NodeCmd{Kind: "status", Task: 7, Status: st})
+	}
+	h.order("mac", board.NodeCmd{Kind: "status", Task: 8, Status: "running"})
+	h.order("mac", board.NodeCmd{Kind: "kill", Worker: "w"})
+	var got []string
+	for _, c := range h.nodes["mac"].cmds {
+		got = append(got, fmt.Sprintf("%s:%d:%s", c.Kind, c.Task, c.Status))
+	}
+	if fmt.Sprint(got) != "[status:7:merging status:8:running kill:0:]" {
+		t.Fatalf("queued: %v", got)
+	}
+}
+
+// A node that gives no gate verdict maxGateAgain times in a row blocks the task for a
+// person, with the node's reason, instead of verifying forever.
+func TestGateWithoutVerdictBlocksAfterMaxAgain(t *testing.T) {
+	sdb, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+	ctx := context.Background()
+	run, _ := sdb.CreateRun(ctx, "x", "", "base")
+	id, _ := sdb.AddTask(ctx, db.NewTask{RunID: run, Repo: "app", Title: "T", Spec: "s", Acceptance: "a", Tier: "B"})
+	commit := "c0ffee"
+	if err := sdb.Move(ctx, "t", id, []db.Status{db.Ready}, db.Running, db.Patch{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sdb.Move(ctx, "t", id, []db.Status{db.Running}, db.Verifying, db.Patch{ResultCommit: &commit}); err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{Cfg: &config.Config{}, DB: sdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		gating: map[int64]bool{}, gateCancel: map[int64]context.CancelFunc{}, regate: map[int64]regate{}}
+	for i := 1; i <= maxGateAgain; i++ {
+		d.applyGate(ctx, gateResult{taskID: id, commit: commit, again: true, why: "node mac could not run it: disk full"})
+		task, _ := sdb.GetTask(ctx, id)
+		if i < maxGateAgain && task.Status != db.Verifying {
+			t.Fatalf("after %d: %s, want still verifying", i, task.Status)
+		}
+		if i == maxGateAgain && task.Status != db.Blocked {
+			t.Fatalf("after %d: %s, want blocked", i, task.Status)
+		}
+	}
+	notes, _ := sdb.Notes(ctx, id, "review", 1)
+	if len(notes) == 0 || !strings.Contains(notes[0].Body, "disk full") {
+		t.Fatalf("the block does not carry the node's reason: %+v", notes)
 	}
 }

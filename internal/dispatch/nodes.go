@@ -80,8 +80,18 @@ type hub struct {
 // another commit (a gate the node kept running after a cancel) is not this one's.
 type gateWait struct {
 	commit string
-	ch     chan *gate.Verdict
+	ch     chan gateMsg
 }
+
+// gateMsg: a node's verdict, or why it had none (v nil).
+type gateMsg struct {
+	v   *gate.Verdict
+	why string
+}
+
+// maxGateAgain: gates a node could not give a verdict on, in a row, before the task is
+// blocked for a person (a full disk, a wrong remote, a node retired for good).
+const maxGateAgain = 5
 
 func newHub(d *Daemon) *hub {
 	return &hub{d: d, nodes: map[string]*nodeState{}, expect: map[string]bool{},
@@ -231,11 +241,11 @@ func (h *hub) Report(ctx context.Context, in board.NodeReport) error {
 		// nothing the task's worker did; nil makes the gate wait and try again
 		if w, ok := h.gates[in.Task]; ok && w.commit == in.Commit {
 			delete(h.gates, in.Task)
-			var v *gate.Verdict
+			m := gateMsg{why: in.Err}
 			if in.Kind == "gate" {
-				v = in.Verdict
+				m.v = in.Verdict
 			}
-			w.ch <- v
+			w.ch <- m
 		}
 		h.mu.Unlock()
 		return nil
@@ -336,6 +346,9 @@ func (h *hub) order(node string, c board.NodeCmd) {
 	if c.Kind == "start" {
 		h.expect[c.Worker] = true
 	}
+	if c.Kind == "status" { // only the latest move of a task matters to a board
+		n.cmds = slices.DeleteFunc(n.cmds, func(o board.NodeCmd) bool { return o.Kind == "status" && o.Task == c.Task })
+	}
 	n.cmds = append(n.cmds, c)
 	select {
 	case n.wake <- struct{}{}:
@@ -408,16 +421,16 @@ func (h *hub) pushBranch(ctx context.Context, node string, t db.Task) error {
 
 // gateOn runs a gate on a node and waits for its verdict; ok is false when the node could
 // not be reached in time, and the caller runs the gate here instead.
-func (h *hub) gateOn(ctx context.Context, node string, t db.Task, commit string, limit time.Duration) (gate.Verdict, bool) {
+func (h *hub) gateOn(ctx context.Context, node string, t db.Task, commit string, limit time.Duration) (gate.Verdict, bool, string) {
 	r, err := h.d.repo(t.Repo)
 	if err != nil {
-		return gate.Verdict{}, false
+		return gate.Verdict{}, false, err.Error()
 	}
 	ref := fmt.Sprintf("refs/swarm/gate/T%d", t.ID)
 	if _, err := gitx.Run(ctx, r.Path, "update-ref", ref, commit); err != nil {
-		return gate.Verdict{}, false
+		return gate.Verdict{}, false, err.Error()
 	}
-	ch := make(chan *gate.Verdict, 1)
+	ch := make(chan gateMsg, 1)
 	h.mu.Lock()
 	h.gates[t.ID] = gateWait{commit: commit, ch: ch}
 	h.mu.Unlock()
@@ -432,18 +445,18 @@ func (h *hub) gateOn(ctx context.Context, node string, t db.Task, commit string,
 	deadline := time.After(limit)
 	for {
 		select {
-		case v := <-ch:
-			if v == nil {
-				return gate.Verdict{}, false
+		case m := <-ch:
+			if m.v == nil {
+				return gate.Verdict{}, false, "node " + node + " could not run it: " + m.why
 			}
-			return *v, true
+			return *m.v, true, ""
 		case <-deadline:
-			return gate.Verdict{}, false
+			return gate.Verdict{}, false, "node " + node + " gave no verdict within " + limit.String()
 		case <-ctx.Done():
-			return gate.Verdict{Stage: "gate", Reason: "cancelled"}, true
+			return gate.Verdict{Stage: "gate", Reason: "cancelled"}, true, ""
 		case <-tick.C:
 			if online, _, _ := h.usable(node); !online {
-				return gate.Verdict{}, false // gone mid-gate: run it here
+				return gate.Verdict{}, false, "node " + node + " went away mid-gate"
 			}
 		}
 	}

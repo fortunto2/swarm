@@ -58,7 +58,9 @@ type Node struct {
 	Dial func(ctx context.Context) (io.ReadWriteCloser, string, error)
 
 	mu       sync.Mutex
-	syncing  sync.Mutex // one keepInStep at a time
+	syncing  sync.Mutex      // one keepInStep at a time
+	statusMu sync.Mutex      // status hooks run in the order the moves came
+	gating   map[string]bool // gates running here, by task and commit: a repeated order waits for the first
 	up       *rpc.Client
 	token    string
 	session  string
@@ -73,15 +75,18 @@ type Node struct {
 	sock     string
 }
 
+// attempt: from the start order on, so the coordinator sees it live while it is prepared
+// (a checkout can outlast its patience) and a second start of the task waits for it.
 type attempt struct {
-	task int64
-	cmd  *exec.Cmd
-	done chan struct{}
+	task      int64
+	cmd       *exec.Cmd // nil while it is prepared
+	cancelled bool      // killed before its process existed
+	done      chan struct{}
 }
 
 // Run serves the workers' socket and keeps the link up until ctx ends.
 func (n *Node) Run(ctx context.Context) error {
-	n.running, n.mains = map[string]*attempt{}, map[string]string{}
+	n.running, n.mains, n.gating = map[string]*attempt{}, map[string]string{}, map[string]bool{}
 	if n.Log == nil {
 		n.Log = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	}
@@ -246,8 +251,22 @@ func (n *Node) session1(ctx context.Context) error {
 		if n.syncing.TryLock() { // off the poll loop: a stalled fetch must not stop the polls
 			go func() { defer n.syncing.Unlock(); n.keepInStep(ctx, orders.Mains) }()
 		}
+		var moves []board.NodeCmd
 		for _, c := range orders.Cmds {
+			if c.Kind == "status" {
+				moves = append(moves, c)
+				continue
+			}
 			go n.do(ctx, c)
+		}
+		if len(moves) > 0 { // in order: a board must not end on an older status
+			go func() {
+				n.statusMu.Lock()
+				defer n.statusMu.Unlock()
+				for _, c := range moves {
+					n.statusHooks(ctx, c)
+				}
+			}()
 		}
 	}
 	return ctx.Err()
@@ -439,19 +458,39 @@ func (n *Node) fetchMain(ctx context.Context, name string) error {
 }
 
 func (n *Node) start(ctx context.Context, c board.NodeCmd) {
+	at := &attempt{task: c.Task, done: make(chan struct{})}
+	liveFile := filepath.Join(n.Cfg.StatePath(), "live", c.Worker)
+	finish := func() {
+		n.mu.Lock()
+		delete(n.running, c.Worker)
+		n.mu.Unlock()
+		_ = os.Remove(liveFile)
+		close(at.done)
+	}
 	fail := func(err error) {
+		finish()
 		n.Log.Error("start failed", "task", c.Task, "err", err)
-		n.report(ctx, board.NodeReport{Kind: "failed", Task: c.Task, Worker: c.Worker, Err: err.Error()})
+		n.report(context.WithoutCancel(ctx), board.NodeReport{Kind: "failed", Task: c.Task, Worker: c.Worker, Err: err.Error()})
 	}
 	n.mu.Lock()
-	for w, a := range n.running { // one worker per task: an older attempt still here goes first
-		if a.task == c.Task {
-			n.mu.Unlock()
-			n.kill(w)
-			<-a.done
-			n.mu.Lock()
+	for {
+		var older *attempt
+		var name string
+		for w, a := range n.running { // one worker per task: an older attempt still here goes first
+			if a.task == c.Task {
+				older, name = a, w
+				break
+			}
 		}
+		if older == nil {
+			break
+		}
+		n.mu.Unlock()
+		n.kill(name)
+		<-older.done
+		n.mu.Lock()
 	}
+	n.running[c.Worker] = at // live from here: the coordinator sees it while it is prepared
 	adapter := n.adapters[c.Provider]
 	n.mu.Unlock()
 	if adapter == nil {
@@ -498,16 +537,21 @@ func (n *Node) start(ctx context.Context, c board.NodeCmd) {
 		return
 	}
 	logPath := filepath.Join(dir, "log.jsonl")
+	n.mu.Lock()
+	if at.cancelled { // told to stop while it was prepared
+		n.mu.Unlock()
+		fail(errors.New("stopped before its process started"))
+		return
+	}
 	done, err := dispatch.Launch(cmd, logPath, c.Worker)
+	if err == nil {
+		at.cmd = cmd
+	}
+	n.mu.Unlock()
 	if err != nil {
 		fail(err)
 		return
 	}
-	at := &attempt{task: c.Task, cmd: cmd, done: make(chan struct{})}
-	n.mu.Lock()
-	n.running[c.Worker] = at
-	n.mu.Unlock()
-	liveFile := filepath.Join(n.Cfg.StatePath(), "live", c.Worker)
 	_ = os.MkdirAll(filepath.Dir(liveFile), 0o700)
 	_ = os.WriteFile(liveFile, []byte(fmt.Sprintf("%d %d\n", cmd.Process.Pid, time.Now().Unix())), 0o600)
 	n.report(ctx, board.NodeReport{Kind: "started", Task: c.Task, Worker: c.Worker, Pid: cmd.Process.Pid, Commit: base})
@@ -524,11 +568,7 @@ func (n *Node) start(ctx context.Context, c board.NodeCmd) {
 		exitErr = <-done
 	}
 	_ = os.Remove(filepath.Join(dir, "mcp.json")) // resolved secrets of extra servers go with the attempt
-	n.mu.Lock()
-	delete(n.running, c.Worker)
-	n.mu.Unlock()
-	_ = os.Remove(liveFile)
-	close(at.done)
+	finish()
 	rep := board.NodeReport{Kind: "exited", Task: c.Task, Worker: c.Worker, Tail: dispatch.FileTail(logPath, tailBytes)}
 	if exitErr != nil {
 		rep.Err = exitErr.Error()
@@ -541,8 +581,11 @@ func (n *Node) start(ctx context.Context, c board.NodeCmd) {
 func (n *Node) kill(worker string) {
 	n.mu.Lock()
 	a, ok := n.running[worker]
+	if ok && (a.cmd == nil || a.cmd.Process == nil) {
+		a.cancelled = true // still being prepared: it stops before launching
+	}
 	n.mu.Unlock()
-	if !ok || a.cmd.Process == nil {
+	if !ok || a.cmd == nil || a.cmd.Process == nil {
 		return
 	}
 	pgid := a.cmd.Process.Pid
@@ -581,6 +624,19 @@ func (n *Node) push(ctx context.Context, c board.NodeCmd) error {
 // gate runs the repo's gate commands on a commit fetched from the coordinator, in a
 // throwaway worktree, and reports the verdict.
 func (n *Node) gate(ctx context.Context, c board.NodeCmd) {
+	key := fmt.Sprintf("%d-%s", c.Task, c.Commit)
+	n.mu.Lock()
+	if n.gating[key] {
+		n.mu.Unlock()
+		return // the same gate is running here (the coordinator asked again): its verdict answers both
+	}
+	n.gating[key] = true
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		delete(n.gating, key)
+		n.mu.Unlock()
+	}()
 	r, v, err := n.repo(c.Repo)
 	verdict := func(vd gate.Verdict) {
 		n.report(context.WithoutCancel(ctx), board.NodeReport{Kind: "gate", Task: c.Task, Commit: c.Commit, Verdict: &vd})

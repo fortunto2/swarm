@@ -537,6 +537,7 @@ func (d *Daemon) fail(ctx context.Context, id int64, from db.Status, kind failKi
 func (d *Daemon) drop(p *proc) {
 	d.stop(p)
 	d.Board.Revoke(p.token)
+	delete(d.early, p.worker)
 	if p.node != "" {
 		d.hub.forget(p.worker)
 		return

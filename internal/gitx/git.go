@@ -81,6 +81,11 @@ func CurrentBranch(ctx context.Context, dir string) string {
 // a command), and the operator's own environment, so ssh finds its agent and its config.
 // The URL comes from the node's profile, not from a repo a worker can write.
 func Transfer(ctx context.Context, dir string, args ...string) (string, error) {
+	// url.<x>.insteadOf in the repo's own config rewrites even a URL given on the command
+	// line, and a worker can write that config: refuse rather than push where it points
+	if rw, _ := Run(ctx, dir, "config", "--local", "--get-regexp", `^url\.`); rw != "" {
+		return "", fmt.Errorf("the repo's config rewrites URLs (%s): not transferring", strings.Fields(rw)[0])
+	}
 	full := append([]string{}, hardened...)
 	full = append(full, "-c", "protocol.file.allow=always", "-c", "protocol.ssh.allow=always", "-c", "protocol.https.allow=always",
 		// a worker can write the shared .git/config: none of what it says there runs here

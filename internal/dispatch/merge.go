@@ -38,8 +38,10 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		// the gate waits for it (the suite may not run here at all)
 		node := ""
 		if r.GateOn == "node" {
-			if node = d.onNode(t); node != "" && (!d.present(node) || time.Now().Before(d.regate[t.ID])) {
-				continue
+			if node = d.onNode(t); node != "" {
+				if rg, ok := d.regate[t.ID]; !d.present(node) || (ok && rg.commit == t.ResultCommit.String && time.Now().Before(rg.at)) {
+					continue
+				}
 			}
 		}
 		if node == "" && !d.admitting() {
@@ -62,8 +64,8 @@ func (d *Daemon) startGates(ctx context.Context) error {
 			defer cancel()
 			v := gate.Static(gctx, r.Path, main, commit, claims, grants)
 			if v.OK && node != "" {
-				nv, ok := d.hub.gateOn(gctx, node, task, commit, r.GateTimeout.Duration+5*time.Minute)
-				d.results <- gateResult{taskID: id, commit: commit, v: nv, again: !ok}
+				nv, ok, why := d.hub.gateOn(gctx, node, task, commit, r.GateTimeout.Duration+5*time.Minute)
+				d.results <- gateResult{taskID: id, commit: commit, v: nv, again: !ok, why: why}
 				return
 			}
 			if v.OK {
@@ -99,8 +101,18 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 	delete(d.gating, r.taskID)
 	delete(d.gateCancel, r.taskID)
 	if r.again {
-		d.regate[r.taskID] = time.Now().Add(time.Minute)
-		d.DB.Event(ctx, "swarmd", r.taskID, "gate_again", map[string]string{"why": "no verdict from its node (gone, or could not run it)"})
+		d.DB.Event(ctx, "swarmd", r.taskID, "gate_again", map[string]string{"why": r.why, "commit": r.commit})
+		if n, _ := d.DB.EventCountSinceRetry(ctx, r.taskID, "gate_again"); n >= maxGateAgain {
+			delete(d.regate, r.taskID)
+			if d.DB.Move(ctx, "swarmd", r.taskID, []db.Status{db.Verifying}, db.Blocked, db.Patch{}) == nil {
+				t, _ := d.DB.GetTask(ctx, r.taskID)
+				_ = d.DB.Note(ctx, t.RunID, r.taskID, "swarmd", "review",
+					fmt.Sprintf("no gate verdict from its node %d times in a row; last: %s. Fix the node, then swarm task retry %d", n, r.why, r.taskID))
+				d.notify(fmt.Sprintf("swarm %s: T%d blocked: its node gave no gate verdict %d times (%s)", d.Cfg.Profile.Name, r.taskID, n, r.why))
+			}
+			return
+		}
+		d.regate[r.taskID] = regate{commit: r.commit, at: time.Now().Add(time.Minute)}
 		return // still verifying: gated again on the node in a minute, or once it is back
 	}
 	delete(d.regate, r.taskID)

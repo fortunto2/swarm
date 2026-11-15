@@ -63,7 +63,14 @@ type gateResult struct {
 	taskID int64
 	commit string
 	v      gate.Verdict
-	again  bool // no verdict: its node went away mid-gate; gated again when it is back
+	again  bool   // no verdict from its node (gone mid-gate, could not run it): gated again
+	why    string // and why, for the event and the task's note
+}
+
+// regate: a node gate that got no verdict is not ordered again before at, for that commit.
+type regate struct {
+	commit string
+	at     time.Time
 }
 
 type Daemon struct {
@@ -98,7 +105,7 @@ type Daemon struct {
 	hub        *hub                 // nodes that dial in; nil when the profile has none
 	nodeEv     chan nodeEvent       // their reports, applied on the loop
 	early      map[string]nodeEvent // reports that beat their proc into d.procs (loop-owned)
-	regate     map[int64]time.Time  // node gates that got no verdict: not again before this
+	regate     map[int64]regate     // node gates that got no verdict: not again before at
 }
 
 // admission: may new workers and gates start on this host now (limits.admit).
@@ -128,7 +135,7 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 		admitted:   make(chan admission, 1),
 		nodeEv:     make(chan nodeEvent, nodeEvents),
 		early:      map[string]nodeEvent{},
-		regate:     map[int64]time.Time{},
+		regate:     map[int64]regate{},
 	}
 	remote := false
 	for _, n := range cfg.Nodes {
