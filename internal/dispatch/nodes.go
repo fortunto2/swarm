@@ -585,7 +585,7 @@ func (d *Daemon) prepareRemote(ctx context.Context, t db.Task, node, pid, model,
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fail(err)
 	}
-	prompt, err := d.prompt(ctx, t, r, pid+"/"+model)
+	prompt, err := d.prompt(ctx, t, r, pid+"/"+model, node)
 	if err != nil {
 		return fail(err)
 	}

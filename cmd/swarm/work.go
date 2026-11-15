@@ -244,7 +244,8 @@ func boardCmd() *cobra.Command {
 // gateCmd: inside a worker's worktree, the checks its submission will face, run the same
 // way the daemon runs them. Exit 1 on a failure, with the reason and the output tail.
 func gateCmd() *cobra.Command {
-	return &cobra.Command{
+	var static bool
+	c := &cobra.Command{
 		Use:   "gate",
 		Short: "In a worker's worktree: run the checks the submission will face",
 		Args:  cobra.NoArgs,
@@ -276,6 +277,10 @@ func gateCmd() *cobra.Command {
 			} else {
 				fmt.Fprintln(out, "gate: nothing committed yet; static checks run on your commits")
 			}
+			if static { // the suite runs where the gate is (the prompt says where); here only the static part
+				fmt.Fprintln(out, "gate: static checks pass (the suite was not run: --static)")
+				return nil
+			}
 			v := gate.Run(ctx, dir, spec.Commands, time.Duration(spec.TimeoutSec)*time.Second, spec.Reruns)
 			if !v.OK {
 				fmt.Fprintf(out, "gate: FAIL %s\n%s\n", v.Reason, v.Tail)
@@ -285,6 +290,8 @@ func gateCmd() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&static, "static", false, "only the static checks (files, tests kept): when the prompt says the suite runs elsewhere")
+	return c
 }
 
 // addViaDaemon sends the task to a running daemon under the operator token. No daemon

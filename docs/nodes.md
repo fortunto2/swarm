@@ -42,7 +42,7 @@ the coordinator, so `swarm gate`, `swarm board` and the board MCP work unchanged
 | worktree, the CLI process | for local accounts | for its accounts |
 | report_done check | after the node pushed the branch | pushes `swarm/T<id>` on request |
 | static gate checks | always | |
-| gate commands | default | `gate_on = "node"`: the node that made the commit (waits for it); `gate_on = "<node>"`: that node while it is online, for every task (a box's work on a laptop's cores) |
+| gate commands | default | `gate_on = "node"`: the node that made the commit (waits for it); `gate_on = "<node>"`: that node while it is online, for every task (a box's work on a laptop's cores); a worker on another machine is told so and runs only `swarm gate --static` and its own tests, not the suite |
 | rebase, fast-forward, branch delivery | always | fetches deliveries, may fast-forward its main (`land = "ff"`) |
 
 A task stays on the node of its previous attempt while that node is connected: its

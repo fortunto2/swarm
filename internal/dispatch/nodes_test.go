@@ -229,3 +229,14 @@ func TestHelloCleansOnlyTheTasksOwnRepo(t *testing.T) {
 		t.Fatalf("cleanup = %+v, want only app T%d", w.Cleanup, id)
 	}
 }
+
+func TestGateElsewhereOnlyForANamedNodeThatIsNotHere(t *testing.T) {
+	for _, c := range []struct{ gateOn, where, want string }{
+		{"", "box", ""}, {"coordinator", "box", ""}, {"node", "mac", ""},
+		{"mac", "mac", ""}, {"mac", "box", "mac"}, {"mac", "", "mac"},
+	} {
+		if got := gateElsewhere(c.gateOn, c.where); got != c.want {
+			t.Errorf("gateElsewhere(%q, %q) = %q, want %q", c.gateOn, c.where, got, c.want)
+		}
+	}
+}

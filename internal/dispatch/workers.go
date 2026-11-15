@@ -183,7 +183,7 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapte
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fail(err)
 	}
-	prompt, err := d.prompt(ctx, t, r, pid+"/"+model)
+	prompt, err := d.prompt(ctx, t, r, pid+"/"+model, "")
 	if err != nil {
 		return fail(err)
 	}
@@ -280,7 +280,19 @@ func Launch(cmd *exec.Cmd, logPath, worker string) (chan error, error) {
 	return done, nil
 }
 
-func (d *Daemon) prompt(ctx context.Context, t db.Task, r config.Repo, provider string) (string, error) {
+// gateElsewhere: the node a repo's suite runs on when gate_on names one other than where the
+// attempt runs; "" when the suite runs here or where the work ran. While the named node is away
+// the coordinator gates, so either way the suite runs after the report, not before it.
+func gateElsewhere(gateOn, where string) string {
+	switch gateOn {
+	case "", "coordinator", "node", where:
+		return ""
+	}
+	return gateOn
+}
+
+// prompt: where is the machine this attempt runs on ("" or d.Node for the coordinator).
+func (d *Daemon) prompt(ctx context.Context, t db.Task, r config.Repo, provider, where string) (string, error) {
 	files, _ := d.DB.WriteClaims(ctx, t.ID)
 	notes, _ := d.DB.Notes(ctx, t.ID, "review", 4)
 	var prev []string
@@ -296,7 +308,10 @@ func (d *Daemon) prompt(ctx context.Context, t db.Task, r config.Repo, provider 
 		rules = string(b)
 	}
 	wt := d.locate(t)
-	return prompts.RenderWorker(prompts.Worker{ID: t.ID, Worktree: wt.Path, Branch: wt.Branch,
+	if where == "" {
+		where = d.Node
+	}
+	return prompts.RenderWorker(prompts.Worker{ID: t.ID, Worktree: wt.Path, Branch: wt.Branch, GateElsewhere: gateElsewhere(r.GateOn, where),
 		Title: t.Title, Spec: t.Spec, Acceptance: t.Acceptance, Files: files, Previous: prev, Gate: r.Gate, Rules: rules,
 		Provider: provider})
 }

@@ -19,6 +19,9 @@ type Worker struct {
 	Files, Previous, Gate   []string
 	Rules                   string
 	Provider                string // provider/model, for the commit trailer
+	// GateElsewhere: the node the repo's suite runs on when it is not this attempt's machine
+	// (gate_on names it): the worker runs only the static checks and its own tests here.
+	GateElsewhere string
 }
 
 func RenderWorker(w Worker) (string, error) {

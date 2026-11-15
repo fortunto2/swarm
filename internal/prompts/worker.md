@@ -32,8 +32,11 @@ Changing any other file fails the task. Need another one: call `claim_files` fir
 ## How to work
 
 1. `get_task` on the board. Post your plan with `post_note` (kind plan).
-2. Write the code. Run `swarm gate`: the same checks your submission will face (the repo's
-   gate{{range .Gate}} `{{.}}`{{end}}, plus: only your files changed, no test removed or skipped).
+{{if .GateElsewhere}}2. Write the code. The repo's full gate{{range .Gate}} `{{.}}`{{end}} runs on {{.GateElsewhere}}
+   after you report, several times faster than on this machine: do not run the whole suite
+   here. Run the tests for the files you touched, then `swarm gate --static` (only your files
+   changed, no test removed or skipped).{{else}}2. Write the code. Run `swarm gate`: the same checks your submission will face (the repo's
+   gate{{range .Gate}} `{{.}}`{{end}}, plus: only your files changed, no test removed or skipped).{{end}}
 3. Commit, then `report_done` with the commit sha. The gate and a reviewer decide, not you.
 4. Too big or unclear: `report_blocked` with one concrete question (for a big task, say how
    you would split it). Do not give up early.
