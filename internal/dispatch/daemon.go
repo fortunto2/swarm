@@ -171,6 +171,9 @@ func (d *Daemon) idle(ctx context.Context) bool {
 	if len(d.procs) > 0 || len(d.starting) > 0 || len(d.gating) > 0 {
 		return false
 	}
+	if err := d.promote(ctx); err != nil { // a merge this tick may have freed a draft
+		return false
+	}
 	statuses := []db.Status{db.Running, db.Verifying, db.Review, db.Merging}
 	if len(d.adapters) > 0 { // ready work with no provider left to run it waits for a person
 		statuses = append(statuses, db.Ready)

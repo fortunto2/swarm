@@ -35,3 +35,31 @@ func TestWorkerTokenCannotUseSessionTools(t *testing.T) {
 		t.Fatalf("task without acceptance accepted: %v", err)
 	}
 }
+
+// The op table enforces roles for every operation, whatever the service method checks.
+func TestOpTableEnforcesRoles(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	s := &Service{DB: d}
+	worker := s.Issue(Identity{TaskID: 1, Role: "worker"})
+	lead := s.Issue(Identity{Role: "lead"})
+	ctx := context.Background()
+	for _, o := range ops {
+		other := worker
+		if o.role == "worker" {
+			other = lead
+		}
+		if _, err := s.Do(ctx, o.name, other, nil); AsError(err).Code != "forbidden" {
+			t.Errorf("%s with the wrong role: %v", o.name, err)
+		}
+		if o.schema == nil {
+			t.Errorf("%s has no input schema", o.name)
+		}
+	}
+	if _, err := s.Do(ctx, "nope", lead, nil); AsError(err).Code != "unknown_op" {
+		t.Fatalf("unknown op: %v", err)
+	}
+}

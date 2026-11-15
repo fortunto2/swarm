@@ -23,6 +23,7 @@ import (
 func taskCmd() *cobra.Command {
 	var repo, title, spec, acceptance, tier, topic string
 	var files []string
+	var needs []int64
 	var priority int
 	var run int64
 	add := &cobra.Command{
@@ -60,11 +61,15 @@ func taskCmd() *cobra.Command {
 				}
 			}
 			id, err := d.AddTask(ctx, db.NewTask{RunID: run, Repo: repo, Title: title, Spec: spec,
-				Acceptance: acceptance, Tier: tier, Priority: priority, Files: files})
+				Acceptance: acceptance, Tier: tier, Priority: priority, Files: files, Needs: needs})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "run %d task %d ready\n", run, id)
+			state := "ready"
+			if len(needs) > 0 {
+				state = "draft, waiting on its dependencies"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "run %d task %d %s\n", run, id, state)
 			return nil
 		},
 	}
@@ -77,6 +82,7 @@ func taskCmd() *cobra.Command {
 	f.StringVar(&topic, "topic", "", "harness topic id this run serves")
 	f.StringSliceVar(&files, "files", nil, "write claims: paths or dir/ prefixes")
 	f.IntVar(&priority, "priority", 0, "higher first")
+	f.Int64SliceVar(&needs, "needs", nil, "task ids that must merge first; the task waits as draft")
 	f.Int64Var(&run, "run", 0, "add to an existing run")
 	for _, n := range []string{"repo", "title", "spec", "acceptance"} {
 		_ = add.MarkFlagRequired(n)
@@ -131,7 +137,7 @@ func mcpCmd() *cobra.Command {
 					return err
 				}
 				defer cl.Close()
-				return board.NewMCP(cl, token).Run(context.Background(), &mcp.StdioTransport{})
+				return board.NewMCP(cl, token, "worker").Run(context.Background(), &mcp.StdioTransport{})
 			}
 			c, err := load()
 			if err != nil {
@@ -146,7 +152,7 @@ func mcpCmd() *cobra.Command {
 				return fmt.Errorf("swarmd is not running for profile %s: start `swarm daemon` (%w)", c.Profile.Name, err)
 			}
 			defer cl.Close()
-			return board.NewSessionMCP(cl, op).Run(context.Background(), &mcp.StdioTransport{})
+			return board.NewMCP(cl, op, "lead").Run(context.Background(), &mcp.StdioTransport{})
 		},
 	}
 	c.Flags().StringVar(&sock, "socket", "", "swarmd socket")
@@ -158,14 +164,13 @@ func mcpCmd() *cobra.Command {
 // from the worker's environment.
 func boardCmd() *cobra.Command {
 	c := &cobra.Command{Use: "board", Short: "Talk to the board from a worker's shell (SWARM_SOCKET, SWARM_TOKEN)"}
-	call := func(method string, a board.Args) error {
-		a.Token = os.Getenv("SWARM_TOKEN")
+	call := func(op string, in any) error {
 		cl, err := board.Dial(os.Getenv("SWARM_SOCKET"))
 		if err != nil {
 			return err
 		}
 		defer cl.Close()
-		res, err := cl.Call(method, a)
+		res, err := cl.Do(op, os.Getenv("SWARM_TOKEN"), in)
 		if err != nil {
 			var be *board.Error
 			if errors.As(err, &be) {
@@ -179,17 +184,17 @@ func boardCmd() *cobra.Command {
 	}
 	c.AddCommand(&cobra.Command{Use: "done <commit> [summary]", Args: cobra.RangeArgs(1, 2),
 		RunE: func(_ *cobra.Command, a []string) error {
-			s := ""
+			in := map[string]string{"commit_sha": a[0]}
 			if len(a) > 1 {
-				s = a[1]
+				in["summary"] = a[1]
 			}
-			return call("ReportDone", board.Args{Commit: a[0], Summary: s})
+			return call("report_done", in)
 		}})
 	c.AddCommand(&cobra.Command{Use: "blocked <reason> <question>", Args: cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, a []string) error {
-			return call("ReportBlocked", board.Args{Reason: a[0], Question: a[1]})
+			return call("report_blocked", map[string]string{"reason": a[0], "question": a[1]})
 		}})
 	c.AddCommand(&cobra.Command{Use: "task", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return call("GetTask", board.Args{}) }})
+		RunE: func(*cobra.Command, []string) error { return call("get_task", nil) }})
 	return c
 }

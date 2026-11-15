@@ -372,3 +372,38 @@ func TestMergeFailureBlocksInsteadOfLooping(t *testing.T) {
 		t.Fatalf("want blocked:\n%s", st)
 	}
 }
+
+// A dependency: B waits as draft until A merges, then runs on top of it. Each worker writes
+// a file of its own, so the two tasks never touch the same path.
+func TestDependencyWaitsForMerge(t *testing.T) {
+	repo := testbed(t)
+	worker := `f="t$SWARM_TASK_ID.go"
+printf 'package app\n\nfunc T%s() int { return %s }\n' "$SWARM_TASK_ID" "$SWARM_TASK_ID" > "$f"
+git add -A && git commit -qm "T$SWARM_TASK_ID"
+"$SWARM_BIN" board done "$(git rev-parse HEAD)"
+`
+	prof := profile(t, repo, worker, 4)
+	if out, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--title", "A",
+		"--spec", "a", "--acceptance", "go test passes"); err != nil || !strings.Contains(out, "task 1 ready") {
+		t.Fatalf("A: %v %s", err, out)
+	}
+	out, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--run", "1", "--title", "B",
+		"--spec", "b", "--acceptance", "go test passes", "--needs", "1")
+	if err != nil || !strings.Contains(out, "task 2 draft") {
+		t.Fatalf("B: %v %s", err, out)
+	}
+	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if st := status(t, prof); !strings.Contains(st, "merged       2") {
+		t.Fatalf("want both merged:\n%s", st)
+	}
+	// B's commit sits on top of A's: A merged first, B was based on or rebased onto it.
+	if log := sh(t, repo, "git log --format=%s main"); !strings.HasPrefix(log, "T2\nT1\n") {
+		t.Fatalf("order on main:\n%s", log)
+	}
+	if _, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--title", "C",
+		"--spec", "c", "--acceptance", "x", "--needs", "99"); err == nil {
+		t.Fatal("a dependency on a task that does not exist was accepted")
+	}
+}

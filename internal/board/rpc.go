@@ -9,20 +9,13 @@ import (
 	"os"
 )
 
-// The daemon side: net/rpc with the JSON codec on a unix socket. Only `swarm mcp` (one per
-// worker) and `swarm report` connect; both carry the token on every call.
+// The daemon side: one RPC method on a unix socket, dispatching through the op table. Only
+// `swarm mcp` and `swarm board` connect; every call carries its token.
 
-type Args struct {
-	Token    string     `json:"token"`
-	Kind     string     `json:"kind,omitempty"`
-	Body     string     `json:"body,omitempty"`
-	Commit   string     `json:"commit,omitempty"`
-	Summary  string     `json:"summary,omitempty"`
-	Reason   string     `json:"reason,omitempty"`
-	Question string     `json:"question,omitempty"`
-	Task     *AddTaskIn `json:"task,omitempty"`
-	Status   string     `json:"status,omitempty"`
-	TaskID   int64      `json:"task_id,omitempty"`
+type Req struct {
+	Op    string          `json:"op"`
+	Token string          `json:"token"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // Reply carries either a result or a board error, so codes survive the transport.
@@ -33,55 +26,14 @@ type Reply struct {
 
 type RPC struct{ S *Service }
 
-func reply(r *Reply, v any, err error) error {
+func (x *RPC) Do(r Req, out *Reply) error {
+	v, err := x.S.Do(context.Background(), r.Op, r.Token, r.Input)
 	if err != nil {
-		r.Err = AsError(err)
+		out.Err = AsError(err)
 		return nil
 	}
-	r.Result, _ = json.Marshal(v)
+	out.Result, _ = json.Marshal(v)
 	return nil
-}
-
-func (x *RPC) GetTask(a Args, r *Reply) error {
-	v, err := x.S.GetTask(context.Background(), a.Token)
-	return reply(r, v, err)
-}
-
-func (x *RPC) PostNote(a Args, r *Reply) error {
-	return reply(r, map[string]bool{"ok": true}, x.S.PostNote(context.Background(), a.Token, a.Kind, a.Body))
-}
-
-func (x *RPC) ReportDone(a Args, r *Reply) error {
-	err := x.S.ReportDone(context.Background(), a.Token, a.Commit, a.Summary)
-	return reply(r, map[string]string{"ok": "submitted to the gate; you are done with this attempt"}, err)
-}
-
-func (x *RPC) ReportBlocked(a Args, r *Reply) error {
-	err := x.S.ReportBlocked(context.Background(), a.Token, a.Reason, a.Question)
-	return reply(r, map[string]string{"ok": "the lead will answer; end this attempt"}, err)
-}
-
-func (x *RPC) AddTask(a Args, r *Reply) error {
-	if a.Task == nil {
-		return reply(r, nil, &Error{"incomplete", "task is required"})
-	}
-	v, err := x.S.AddTask(context.Background(), a.Token, *a.Task)
-	return reply(r, v, err)
-}
-
-func (x *RPC) ListTasks(a Args, r *Reply) error {
-	v, err := x.S.ListTasks(context.Background(), a.Token, a.Status)
-	return reply(r, v, err)
-}
-
-func (x *RPC) Status(a Args, r *Reply) error {
-	v, err := x.S.Status(context.Background(), a.Token)
-	return reply(r, v, err)
-}
-
-func (x *RPC) TaskNotes(a Args, r *Reply) error {
-	v, err := x.S.TaskNotes(context.Background(), a.Token, a.TaskID)
-	return reply(r, v, err)
 }
 
 // Serve listens on the socket until ctx ends. The socket is 0600: same user only.
@@ -109,7 +61,7 @@ func Serve(ctx context.Context, sock string, s *Service) error {
 	}
 }
 
-// Client is the worker side of the socket.
+// Client is the caller side of the socket.
 type Client struct{ c *rpc.Client }
 
 func Dial(sock string) (*Client, error) {
@@ -122,10 +74,15 @@ func Dial(sock string) (*Client, error) {
 
 func (c *Client) Close() error { return c.c.Close() }
 
-// Call returns the result JSON, or the board error as a Go error.
-func (c *Client) Call(method string, a Args) (json.RawMessage, error) {
+// Do returns the result JSON, or the board error as a Go error. input may be any value
+// that marshals to the operation's input.
+func (c *Client) Do(op, token string, input any) (json.RawMessage, error) {
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
 	var r Reply
-	if err := c.c.Call("Board."+method, a, &r); err != nil {
+	if err := c.c.Call("Board.Do", Req{Op: op, Token: token, Input: raw}, &r); err != nil {
 		return nil, err
 	}
 	if r.Err != nil {

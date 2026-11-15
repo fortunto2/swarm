@@ -52,6 +52,7 @@ type AddTaskIn struct {
 	Acceptance string   `json:"acceptance"`
 	Tier       string   `json:"tier,omitempty"`
 	Files      []string `json:"files,omitempty"`
+	Needs      []int64  `json:"needs,omitempty"`
 	Run        int64    `json:"run,omitempty"`
 	Priority   int      `json:"priority,omitempty"`
 }
@@ -84,9 +85,9 @@ func (s *Service) AddTask(ctx context.Context, tok string, in AddTaskIn) (map[st
 		}
 	}
 	tid, err := s.DB.AddTask(ctx, db.NewTask{RunID: run, Repo: in.Repo, Title: in.Title, Spec: in.Spec,
-		Acceptance: in.Acceptance, Tier: in.Tier, Priority: in.Priority, Files: in.Files})
+		Acceptance: in.Acceptance, Tier: in.Tier, Priority: in.Priority, Files: in.Files, Needs: in.Needs})
 	if err != nil {
-		return nil, err
+		return nil, &Error{"bad_task", err.Error()}
 	}
 	s.DB.Event(ctx, id.Actor(), tid, "task_added", in)
 	s.signal(tid)
