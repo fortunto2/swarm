@@ -145,7 +145,7 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapte
 	}
 	// A new worktree starts from main as it is now, so a task sees everything merged before
 	// it (its dependencies first of all), and its diff is measured from there.
-	base, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
+	base, err := gitx.Head(ctx, r.Path, r.MainRef())
 	if err != nil {
 		return fail(err)
 	}

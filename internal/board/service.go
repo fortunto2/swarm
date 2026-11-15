@@ -184,7 +184,7 @@ func (s *Service) ReportDone(ctx context.Context, tok, commit, summary string) e
 	if err != nil {
 		return err
 	}
-	if gitx.IsAncestor(ctx, wt, sha, "refs/heads/"+r.MainBranch) {
+	if gitx.IsAncestor(ctx, wt, sha, r.MainRef()) {
 		return &Error{"no_change", "the commit adds nothing over main"}
 	}
 	if err := s.DB.Move(ctx, id.Actor(), t.ID, []db.Status{db.Running}, db.Verifying, db.Patch{ResultCommit: &sha, ClearLease: true}); err != nil {
@@ -271,7 +271,7 @@ func (s *Service) GateSpec(ctx context.Context, tok string) (GateSpec, error) {
 	if err != nil {
 		return GateSpec{}, err
 	}
-	base, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
+	base, err := gitx.Head(ctx, r.Path, r.MainRef())
 	if err != nil {
 		return GateSpec{}, err
 	}

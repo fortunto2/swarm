@@ -270,6 +270,9 @@ func (c *Config) Validate() error {
 		if len(r.Gate) == 0 {
 			bad("repos.%s.gate is empty: nothing would decide a task is done", n)
 		}
+		if strings.HasPrefix(r.MainBranch, "refs/") && r.Merge == "ff" {
+			bad("repos.%s: main_branch %q is a full ref; merge = \"ff\" can only move a local branch (use merge = \"branch\")", n, r.MainBranch)
+		}
 		if !slices.Contains(merges, r.Merge) {
 			bad("repos.%s.merge = %q, want one of %v", n, r.Merge, merges)
 		}
@@ -467,3 +470,13 @@ func (c *Config) WorkerDeny() []string {
 
 // Strict: the profile treats workers as untrusted (see Profile.Safety).
 func (c *Config) Strict() bool { return c.Profile.Safety == "strict" }
+
+// MainRef: the ref tasks branch from and are measured against. main_branch is a branch name
+// ("main") or, for a host that bases work on a ref someone else moves, a full ref
+// ("refs/remotes/laptop/main"); the latter only with merge = "branch".
+func (r Repo) MainRef() string {
+	if strings.HasPrefix(r.MainBranch, "refs/") {
+		return r.MainBranch
+	}
+	return "refs/heads/" + r.MainBranch
+}

@@ -160,7 +160,7 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 		if err != nil {
 			return "", err
 		}
-		return gitx.Head(context.Background(), r.Path, "refs/heads/"+r.MainBranch)
+		return gitx.Head(context.Background(), r.Path, r.MainRef())
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- board.Serve(ctx, d.Socket, d.Board) }()

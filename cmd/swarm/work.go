@@ -69,7 +69,7 @@ func taskCmd() *cobra.Command {
 				}
 				defer d.Close()
 				if run == 0 {
-					base, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
+					base, err := gitx.Head(ctx, r.Path, r.MainRef())
 					if err != nil {
 						return err
 					}

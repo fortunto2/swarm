@@ -922,3 +922,27 @@ func TestBranchMergeDeliversForReview(t *testing.T) {
 		t.Fatalf("want the task settled as delivered:\n%s", status(t, prof))
 	}
 }
+
+// A host that bases work on a ref it does not own (a remote-tracking ref another machine
+// pushes) delivers branches against it; ff is refused for such a ref.
+func TestBranchModeOnARemoteTrackingRef(t *testing.T) {
+	repo := testbed(t)
+	sh(t, repo, "git update-ref refs/remotes/laptop/main main")
+	prof := profile(t, repo, goodWorker, 4)
+	toml := filepath.Join(prof, "swarm.toml")
+	b, _ := os.ReadFile(toml)
+	cfg := strings.Replace(string(b), `merge = "ff"`, "merge = \"branch\"\nbranch_prefix = \"gnome/swarm-\"", 1)
+	cfg = strings.Replace(cfg, "[repos.app]\n", "[repos.app]\nmain_branch = \"refs/remotes/laptop/main\"\n", 1)
+	_ = os.WriteFile(toml, []byte(cfg), 0o600)
+	addTask(t, prof, "")
+	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if msg := sh(t, repo, "git log -1 --format=%s gnome/swarm-T1"); !strings.Contains(msg, "add Two") {
+		t.Fatalf("gnome/swarm-T1 is %q", msg)
+	}
+	_ = os.WriteFile(toml, []byte(strings.Replace(cfg, `merge = "branch"`, `merge = "ff"`, 1)), 0o600)
+	if out, err := swarm(t, prof, 30*time.Second, "check"); err == nil || !strings.Contains(out, "full ref") {
+		t.Fatalf("ff on a full ref must be refused: %v\n%s", err, out)
+	}
+}

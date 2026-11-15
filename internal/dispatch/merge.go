@@ -33,7 +33,7 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		main, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
+		main, err := gitx.Head(ctx, r.Path, r.MainRef())
 		if err != nil {
 			return err
 		}
@@ -135,7 +135,7 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 		return fmt.Errorf("repo %s: merge %q is not built yet", t.Repo, r.Merge)
 	}
 	wt := d.locate(t)
-	main, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
+	main, err := gitx.Head(ctx, r.Path, r.MainRef())
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 		}
 		d.DB.Event(ctx, "swarmd", t.ID, "delivered", map[string]string{"branch": name, "commit": t.ResultCommit.String})
 	} else if err := ffMain(ctx, r, t.ResultCommit.String, main); err != nil {
-		if now, herr := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch); herr == nil && now != main {
+		if now, herr := gitx.Head(ctx, r.Path, r.MainRef()); herr == nil && now != main {
 			return nil // someone moved main meanwhile: next tick rebases onto it
 		}
 		return err
@@ -263,6 +263,6 @@ func ffMain(ctx context.Context, r config.Repo, commit, oldMain string) error {
 		_, err := gitx.Run(ctx, r.Path, "merge", "--ff-only", "--quiet", commit)
 		return err
 	}
-	_, err := gitx.Run(ctx, r.Path, "update-ref", "refs/heads/"+r.MainBranch, commit, oldMain)
+	_, err := gitx.Run(ctx, r.Path, "update-ref", r.MainRef(), commit, oldMain)
 	return err
 }
