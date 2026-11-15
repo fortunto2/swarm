@@ -142,6 +142,9 @@ command = ["/bin/false"]
 	}
 	seen := filepath.Join(t.TempDir(), "statuses")
 	sh(t, nodeProf, fmt.Sprintf(`printf '\n[hooks]\non_status = ["echo {task} {status} >> %s"]\n' >> swarm.toml`, seen))
+	if out, err := swarm(t, nodeProf, 30*time.Second, "node", "--check"); err == nil {
+		t.Fatalf("a check with no coordinator running passed: %s", out)
+	}
 	_, nlog := startNode(t, nodeProf)
 	daemon := exec.Command(bin, "--profile", coord, "daemon", "--until-idle")
 	var dlog bytes.Buffer
@@ -201,6 +204,9 @@ command = ["/bin/false"]
 		if st := status(t, coord); !strings.Contains(st, "runs swarm 0000000, this binary is") {
 			t.Fatalf("a node on an older build is not flagged:\n%s", st)
 		}
+	}
+	if out, err := swarm(t, nodeProf, 30*time.Second, "node", "--check"); err == nil {
+		t.Fatalf("a check passed with the coordinator's daemon gone: %s", out)
 	}
 	if st := status(t, nodeProf); !strings.Contains(st, "node n1 (profile n1): running") {
 		t.Fatalf("a node profile's status:\n%s", st)
@@ -289,6 +295,11 @@ func TestNodeGateWaitsForItsNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() })
+	// the link check, beside the running node: answers, and takes nothing from it
+	waitFor(t, 30*time.Second, func() bool {
+		out, err := swarm(t, nodeProf, 30*time.Second, "node", "--check")
+		return err == nil && strings.Contains(out, "ok: the coordinator answers") && strings.Contains(out, "knows node n1")
+	}, "swarm node --check does not pass against a running coordinator")
 	gated := func() bool {
 		return sqlite(t, coord, "SELECT count(*) FROM events WHERE type='gate_started'") != "0"
 	}

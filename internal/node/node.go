@@ -826,3 +826,39 @@ func (f *forward) Do(r board.Req, out *board.Reply) error {
 	}
 	return nil
 }
+
+// Check dials the coordinator and asks its status without saying hello: no session, no
+// orders, nothing a running node of the same name would notice. It proves the command,
+// the relay, the token and that this node is declared there.
+func (n *Node) Check(ctx context.Context) (string, error) {
+	if n.Dial == nil {
+		n.Dial = n.dialCommand
+	}
+	conn, token, err := n.Dial(ctx)
+	if err != nil {
+		return "", fmt.Errorf("dial: %w", err)
+	}
+	cl := jsonrpc.NewClient(conn)
+	defer cl.Close()
+	n.mu.Lock()
+	n.up, n.token = cl, token
+	n.mu.Unlock()
+	var st struct {
+		Tasks map[string]int `json:"tasks"`
+		Nodes []struct {
+			Node   string `json:"node"`
+			Online bool   `json:"online"`
+		} `json:"nodes"`
+	}
+	if err := n.call(ctx, "swarm_status", struct{}{}, &st); err != nil {
+		return "", fmt.Errorf("status: %w", err)
+	}
+	declared := false
+	for _, x := range st.Nodes {
+		declared = declared || x.Node == n.Cfg.Node.Name
+	}
+	if !declared {
+		return "", fmt.Errorf("the coordinator answers, but has no [nodes.%s] with host = \"remote\"", n.Cfg.Node.Name)
+	}
+	return fmt.Sprintf("ok: the coordinator answers (tasks %v) and knows node %s", st.Tasks, n.Cfg.Node.Name), nil
+}

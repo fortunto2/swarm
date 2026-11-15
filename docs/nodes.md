@@ -99,10 +99,23 @@ only what is new. A publish may take up to 15 minutes; it runs beside the polls,
 fast-forwards the node's main to the coordinator's after merges, when that is a
 fast-forward; with `merge = "branch"`, delivered branches are fetched to the node instead.
 
+`swarm --profile <node profile> node --check` proves the link before anything runs: it dials
+the coordinator, asks its status and that the node is declared there, and takes no work.
 Then `swarm --profile <node profile> node` (a launchd agent or a systemd unit), and a task
 can ask for a machine: `swarm task add ... --runs-on vpc`, or `runs_on` in `swarm_add_task`.
 `swarm status` on the coordinator shows each node: online or when last seen, running,
 holding and why.
+
+## Trust
+
+The link is ssh, and ssh is the authentication: whoever can run `swarm relay --node` on the
+coordinator's host is that user, and gets the operator token (it could read it from the
+state directory anyway). A node is trusted like the coordinator's own machine. Its workers
+are not: they run as the node's user and can write their worktree's shared `.git/config`, so
+the node's own git transfers ignore what that config says about ssh commands, credential
+helpers and proxies, and refuse a repo whose config rewrites URLs. A worker on a node that
+holds the user's ssh keys can reach the coordinator the way the node does; give workers
+`safety = "strict"` (a sandbox) where that matters.
 
 ## Not built
 

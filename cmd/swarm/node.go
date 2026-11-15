@@ -26,7 +26,8 @@ import (
 
 // nodeCmd: run this machine as a node of a coordinator (its profile has [node]).
 func nodeCmd() *cobra.Command {
-	return &cobra.Command{
+	var check bool
+	c := &cobra.Command{
 		Use:   "node",
 		Short: "Run this machine as a node: dial the coordinator, run its workers here",
 		Long: `Dials the coordinator with the command in [node].coordinator (ssh, usually), and
@@ -41,11 +42,13 @@ when the link drops; workers keep running meanwhile. One per profile.`,
 			if c.Node == nil {
 				return errors.New("this profile has no [node]: `swarm daemon` runs a coordinator, `swarm node` a node")
 			}
-			release, err := dispatch.Lock(c.StatePath())
-			if err != nil {
-				return err
+			if !check { // a check runs beside a live node: it takes no work and holds no lock
+				release, err := dispatch.Lock(c.StatePath())
+				if err != nil {
+					return err
+				}
+				defer release()
 			}
-			defer release()
 			self, err := os.Executable()
 			if err != nil {
 				return err
@@ -53,9 +56,16 @@ when the link drops; workers keep running meanwhile. One per profile.`,
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			n := &node.Node{Cfg: c, Bin: self, Version: revision()}
+			if check {
+				out, err := n.Check(ctx)
+				fmt.Fprintln(cmd.OutOrStdout(), out)
+				return err
+			}
 			return n.Run(ctx)
 		},
 	}
+	c.Flags().BoolVar(&check, "check", false, "dial the coordinator and ask its status, taking no work: proves ssh, the relay and the token")
+	return c
 }
 
 // relayCmd: on the coordinator's host, join stdin/stdout to the daemon's socket. A node
