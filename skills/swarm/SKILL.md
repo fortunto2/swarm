@@ -57,7 +57,11 @@ swarm status
 ```
 
 Check `swarm status` before claiming anything is done. `merged` means the gate passed and
-`main` moved; nothing else does.
+`main` moved (with `merge = "branch"`: the delivery branch exists; a person ships it).
+
+A task that stays `ready`: `swarm status` shows `held since ...` when the host's admit
+command says not now (another job runs, memory is short), and `swarm providers` shows a
+provider cooling until a reset or over its budget. Both clear by themselves; do not retry.
 
 ## 4. When a task is blocked
 
