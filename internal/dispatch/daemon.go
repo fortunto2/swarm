@@ -88,6 +88,7 @@ type Daemon struct {
 	reg        registry      // provider states and spend, refreshed each schedule pass
 	redact     redact.Filter // text swarm stores or forwards goes through it
 	admit      admission     // the last answer of limits.admit; only the loop touches it
+	admitShown int           // what the log and events last said: 0 nothing yet, 1 admitted, 2 held
 	admitted   chan admission
 }
 
@@ -511,11 +512,18 @@ func (d *Daemon) askAdmit() {
 // applyAdmit records the answer; a change is logged and kept as an event, a repeat is not.
 func (d *Daemon) applyAdmit(ctx context.Context, a admission) {
 	prev := d.admit
-	d.admit = a
-	if prev.checked && prev.ok == a.ok {
+	d.admit = a // scheduling follows every answer at once
+	state := 2
+	if a.ok {
+		state = 1
+	}
+	// The record (log line, event, what status shows) changes only when an answer repeats:
+	// memory near the threshold flipped it every 15 s, ten lines an hour on a 4 GB host. The
+	// first answer is recorded at once, so status never shows a hold from a past run.
+	if state == d.admitShown || (d.admitShown != 0 && (!prev.checked || prev.ok != a.ok)) {
 		return
 	}
-	// the first answer is recorded too, so `swarm status` never shows a hold from a past run
+	d.admitShown = state
 	if a.ok {
 		d.Log.Info("admitted")
 		d.DB.Event(ctx, "swarmd", 0, "admitted", nil)
