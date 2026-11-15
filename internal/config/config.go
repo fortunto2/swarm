@@ -5,11 +5,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -198,7 +198,7 @@ func (c *Config) Validate() error {
 	if len(c.Repos) == 0 {
 		bad("at least one [repos.<name>] is required")
 	}
-	for _, n := range sortedKeys(c.Repos) {
+	for _, n := range slices.Sorted(maps.Keys(c.Repos)) {
 		r := c.Repos[n]
 		if r.Path == "" {
 			bad("repos.%s.path is required", n)
@@ -218,7 +218,7 @@ func (c *Config) Validate() error {
 	if len(c.Providers) == 0 {
 		bad("at least one [providers.<id>] is required")
 	}
-	for _, id := range sortedKeys(c.Providers) {
+	for _, id := range slices.Sorted(maps.Keys(c.Providers)) {
 		p := c.Providers[id]
 		if !slices.Contains(kinds, p.Kind) {
 			bad("providers.%s.kind = %q, want one of %v", id, p.Kind, kinds)
@@ -237,13 +237,13 @@ func (c *Config) Validate() error {
 				bad("providers.%s.tiers: %q is not one of %v", id, t, tiers)
 			}
 		}
-		for _, k := range sortedKeys(p.Env) {
+		for _, k := range slices.Sorted(maps.Keys(p.Env)) {
 			if secretKey.MatchString(k) && !refPattern.MatchString(p.Env[k]) {
 				bad("providers.%s.env.%s holds a value; use secret:<name> or env:<VAR>", id, k)
 			}
 		}
 	}
-	for _, n := range sortedKeys(c.Nodes) {
+	for _, n := range slices.Sorted(maps.Keys(c.Nodes)) {
 		nd := c.Nodes[n]
 		if nd.Host != "local" && !strings.HasPrefix(nd.Host, "ssh:") {
 			bad("nodes.%s.host = %q, want \"local\" or \"ssh:<alias>\"", n, nd.Host)
@@ -259,7 +259,7 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	for _, n := range sortedKeys(c.MCP) {
+	for _, n := range slices.Sorted(maps.Keys(c.MCP)) {
 		m := c.MCP[n]
 		if n == "board" {
 			bad("mcp.board is reserved for the swarm board")
@@ -272,7 +272,7 @@ func (c *Config) Validate() error {
 				bad("mcp.%s.roles: %q is not worker or lead", n, r)
 			}
 		}
-		for _, k := range sortedKeys(m.Env) {
+		for _, k := range slices.Sorted(maps.Keys(m.Env)) {
 			if secretKey.MatchString(k) && !refPattern.MatchString(m.Env[k]) {
 				bad("mcp.%s.env.%s holds a value; use secret:<name> or env:<VAR>", n, k)
 			}
@@ -301,12 +301,3 @@ func (c *Config) StatePath() string {
 }
 
 func (c *Config) DBPath() string { return filepath.Join(c.StatePath(), "swarm.db") }
-
-func sortedKeys[V any](m map[string]V) []string {
-	k := make([]string, 0, len(m))
-	for x := range m {
-		k = append(k, x)
-	}
-	sort.Strings(k)
-	return k
-}

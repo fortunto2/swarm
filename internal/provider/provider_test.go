@@ -7,16 +7,16 @@ import (
 	"github.com/fortunto2/swarm/internal/config"
 )
 
-func TestParseUsageTakesTheLastResult(t *testing.T) {
+func TestParseResultTakesTheLastResult(t *testing.T) {
 	log := `{"type":"system","subtype":"init"}
 {"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":2}}
 {"type":"assistant"}
 {"type":"result","total_cost_usd":0.067,"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":42}}`
-	u := ParseUsage(log)
+	u := ParseResult(log)
 	if !u.Known || u.TokensIn != 115 || u.TokensOut != 42 || u.CostUSD != 0.067 {
 		t.Fatalf("%+v", u)
 	}
-	if ParseUsage(`{"type":"assistant"}`).Known {
+	if ParseResult(`{"type":"assistant"}`).Known {
 		t.Fatal("no result line must be unknown, not zero")
 	}
 }
@@ -42,5 +42,21 @@ func TestCleanEnvDropsAccountVars(t *testing.T) {
 		if strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") || strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") {
 			t.Fatalf("leaked %s", kv)
 		}
+	}
+}
+
+func TestAuthOnlyFromTheFinalResult(t *testing.T) {
+	failed := `{"type":"result","is_error":true,"result":"Not logged in · Please run /login"}`
+	if !ParseResult(failed).AuthFailed {
+		t.Fatal("login error in the result event not seen")
+	}
+	// a worker that read a file mentioning /login and then finished normally
+	ok := `{"type":"user","message":{"content":"README: Please run /login first"}}
+{"type":"result","is_error":false,"result":"done"}`
+	if ParseResult(ok).AuthFailed {
+		t.Fatal("tool output mistaken for a login failure")
+	}
+	if !ParseResult("Not logged in\n").AuthFailed {
+		t.Fatal("plain-text login error with no result event not seen")
 	}
 }

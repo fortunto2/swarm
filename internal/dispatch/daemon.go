@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/fortunto2/swarm/internal/board"
@@ -29,12 +30,13 @@ const (
 )
 
 type proc struct {
-	cmd      *exec.Cmd
-	token    string
-	provider string
-	done     chan error
-	deadline time.Time
-	log      string
+	cmd        *exec.Cmd
+	token      string
+	provider   string
+	done       chan error
+	deadline   time.Time
+	leaseUntil time.Time
+	log        string
 }
 
 type gateResult struct {
@@ -57,6 +59,7 @@ type Daemon struct {
 	gating   map[int64]bool
 	results  chan gateResult
 	wake     chan int64
+	bg       sync.WaitGroup // after-merge hooks: bounded by their timeout, awaited on exit
 }
 
 func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
@@ -115,11 +118,13 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 			d.Log.Error("tick", "err", err)
 		}
 		if untilIdle && d.idle(ctx) {
+			d.bg.Wait()
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			d.stopAll()
+			d.bg.Wait()
 			return nil
 		case err := <-errc:
 			return fmt.Errorf("board socket: %w", err)
@@ -182,10 +187,15 @@ func (d *Daemon) closeRuns(ctx context.Context) error {
 }
 
 // SocketPath is short and fixed per state dir: a unix socket path is capped near 104 bytes,
-// and a profile under a long home or a macOS TMPDIR passes that easily.
+// and a profile under a long home or a macOS TMPDIR passes that easily. It lives in the
+// user's cache dir (not a world-writable /tmp), which is short on both macOS and Linux.
 func SocketPath(stateDir string) string {
 	h := sha256.Sum256([]byte(stateDir))
-	return filepath.Join("/tmp", fmt.Sprintf("swarm-%d", os.Getuid()), hex.EncodeToString(h[:6])+".sock")
+	name := hex.EncodeToString(h[:6]) + ".sock"
+	if dir, err := os.UserCacheDir(); err == nil && len(dir)+len("/swarm/")+len(name) < 100 {
+		return filepath.Join(dir, "swarm", name)
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("swarm-%d", os.Getuid()), name)
 }
 
 func (d *Daemon) repo(name string) (config.Repo, error) {

@@ -242,7 +242,7 @@ after_merge = ["echo {repo} {task} > `+filepath.Join(marks, "hook")+`"]
 // counted against the task, no three blind retries.
 func TestNotLoggedInDisablesProvider(t *testing.T) {
 	repo := testbed(t)
-	prof := profile(t, repo, "echo '{\"result\":\"Not logged in · Please run /login\"}'\nexit 1\n", 4)
+	prof := profile(t, repo, "echo '{\"type\":\"result\",\"is_error\":true,\"result\":\"Not logged in · Please run /login\"}'\nexit 1\n", 4)
 	addTask(t, prof, "")
 	out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle")
 	if err != nil || !strings.Contains(out, "provider disabled") {

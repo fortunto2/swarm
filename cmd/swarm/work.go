@@ -38,11 +38,11 @@ func taskCmd() *cobra.Command {
 				return fmt.Errorf("profile has no repo %q", repo)
 			}
 			if spec == "-" {
-				b, err := readAll(os.Stdin)
+				b, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return err
 				}
-				spec = b
+				spec = string(b)
 			}
 			d, err := db.Open(c.DBPath())
 			if err != nil {
@@ -192,9 +192,4 @@ func boardCmd() *cobra.Command {
 	c.AddCommand(&cobra.Command{Use: "task", Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error { return call("GetTask", board.Args{}) }})
 	return c
-}
-
-func readAll(f *os.File) (string, error) {
-	b, err := io.ReadAll(f)
-	return string(b), err
 }

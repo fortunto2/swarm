@@ -59,9 +59,9 @@ func (d *DB) Claim(ctx context.Context, taskID int64, provider, model, worker, n
 	return err
 }
 
-// StatusCounts: tasks per status for one run, or for all runs when runID is 0.
-func (d *DB) StatusCounts(ctx context.Context, runID int64) (map[string]int, error) {
-	rows, err := d.QueryContext(ctx, `SELECT status, count(*) FROM tasks WHERE ?1=0 OR run_id=?1 GROUP BY status`, runID)
+// StatusCounts: tasks per status, all runs.
+func (d *DB) StatusCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := d.QueryContext(ctx, `SELECT status, count(*) FROM tasks GROUP BY status`)
 	if err != nil {
 		return nil, err
 	}

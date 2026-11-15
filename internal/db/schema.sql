@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   infra_failures INTEGER NOT NULL DEFAULT 0,
   lease_until INTEGER, not_before INTEGER,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS tasks_sched ON tasks(run_id, status, priority DESC);
+DROP INDEX IF EXISTS tasks_sched; -- was (run_id, status, ...): no tick query filters by run_id
+CREATE INDEX IF NOT EXISTS tasks_by_status ON tasks(status, priority DESC, id);
 
 CREATE TABLE IF NOT EXISTS deps(
   task_id INTEGER NOT NULL REFERENCES tasks(id), needs_id INTEGER NOT NULL REFERENCES tasks(id),

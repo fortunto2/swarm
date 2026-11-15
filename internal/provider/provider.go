@@ -7,11 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -23,7 +23,6 @@ import (
 // would commit it).
 type Attempt struct {
 	TaskID   int64
-	N        int
 	Worktree string
 	Dir      string
 	Prompt   string
@@ -52,7 +51,7 @@ func AllowedTools(a Attempt, extra []string) []string {
 			derived = append(derived, "Bash("+f[0]+":*)")
 		}
 	}
-	sort.Strings(derived)
+	slices.Sort(derived)
 	return append(append(base, derived...), extra...)
 }
 
@@ -86,13 +85,8 @@ func SwarmEnv(a Attempt) []string {
 
 // ResolveEnv turns secret:/env: references into values. Plain values pass through.
 func ResolveEnv(ctx context.Context, env map[string]string, prof config.Profile) ([]string, error) {
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 	var out []string
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(env)) {
 		v := env[k]
 		switch {
 		case strings.HasPrefix(v, "env:"):
@@ -145,13 +139,10 @@ func (c claude) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Dir = a.Worktree
-	env, err := ResolveEnv(ctx, c.p.Env, c.prof)
+	cmd, err := baseCmd(ctx, "claude", args, a, c.p, c.prof)
 	if err != nil {
 		return nil, err
 	}
-	cmd.Env = append(append(CleanEnv(), env...), SwarmEnv(a)...)
 	if c.p.ConfigDir != "" {
 		cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR="+config.Expand(c.p.ConfigDir))
 	}
@@ -202,17 +193,17 @@ func CleanEnv() []string {
 	return out
 }
 
-// AuthFailure: the CLI could not log in. Not the task's fault and not worth a retry on the
-// same provider: the provider is taken out until a person logs it in again.
-var authPatterns = []string{"Not logged in", "Invalid API key", "OAuth token has expired", "Please run /login"}
-
-func AuthFailure(logTail string) bool {
-	for _, p := range authPatterns {
-		if strings.Contains(logTail, p) {
-			return true
-		}
+// baseCmd: the process every adapter starts from. In the worktree, with a clean
+// environment, the provider's resolved env and the swarm identity.
+func baseCmd(ctx context.Context, name string, args []string, a Attempt, p config.Provider, prof config.Profile) (*exec.Cmd, error) {
+	env, err := ResolveEnv(ctx, p.Env, prof)
+	if err != nil {
+		return nil, err
 	}
-	return false
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = a.Worktree
+	cmd.Env = append(append(CleanEnv(), env...), SwarmEnv(a)...)
+	return cmd, nil
 }
 
 type mock struct {
@@ -223,13 +214,10 @@ type mock struct {
 // mock runs a scripted worker: the same protocol (board over the socket, report done),
 // no model, no quota. Tests and dry runs use it.
 func (m mock) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
-	cmd := exec.CommandContext(ctx, m.p.Command[0], m.p.Command[1:]...)
-	cmd.Dir = a.Worktree
-	env, err := ResolveEnv(ctx, m.p.Env, m.prof)
+	cmd, err := baseCmd(ctx, m.p.Command[0], m.p.Command[1:], a, m.p, m.prof)
 	if err != nil {
 		return nil, err
 	}
-	cmd.Env = append(append(CleanEnv(), env...), SwarmEnv(a)...)
 	mcpPath, err := WriteMCPConfig(ctx, a, m.prof)
 	if err != nil {
 		return nil, err
@@ -238,26 +226,39 @@ func (m mock) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-// Usage of one attempt, from the CLI's final event. Zero values mean the CLI did not say;
-// they are stored as NULL, never guessed.
-type Usage struct {
+// Result of one attempt, from the CLI's final event. Zero usage means the CLI did not say;
+// it is stored as NULL, never guessed.
+type Result struct {
 	TokensIn, TokensOut int64
 	CostUSD             float64
-	Known               bool
+	Known               bool // a final result event was found
+	AuthFailed          bool // the CLI could not log in: not the task's fault, the provider is out
 }
 
-// ParseUsage reads Claude's stream-json: the last {"type":"result"} line carries the
-// attempt's total cost and token counts (input counts cache reads and writes too).
-func ParseUsage(log string) Usage {
-	var u Usage
-	for _, line := range strings.Split(log, "\n") {
+// authPatterns are matched against the final result's text only, never the whole log: a
+// worker that greps a file mentioning /login must not take its provider down.
+var authPatterns = []string{"Not logged in", "Invalid API key", "OAuth token has expired", "Please run /login"}
+
+func authText(s string) bool {
+	return slices.ContainsFunc(authPatterns, func(p string) bool { return strings.Contains(s, p) })
+}
+
+// ParseResult reads Claude's stream-json: the last {"type":"result"} line carries the
+// attempt's cost, token counts (input includes cache reads and writes) and, on failure, the
+// reason. With no result event, only the last line of output is checked for a login error.
+func ParseResult(log string) Result {
+	var r Result
+	lines := strings.Split(strings.TrimRight(log, "\n"), "\n")
+	for _, line := range lines {
 		if !strings.Contains(line, `"type":"result"`) {
 			continue
 		}
 		var e struct {
-			Type  string  `json:"type"`
-			Cost  float64 `json:"total_cost_usd"`
-			Usage struct {
+			Type    string  `json:"type"`
+			IsError bool    `json:"is_error"`
+			Text    string  `json:"result"`
+			Cost    float64 `json:"total_cost_usd"`
+			Usage   struct {
 				In          int64 `json:"input_tokens"`
 				Out         int64 `json:"output_tokens"`
 				CacheRead   int64 `json:"cache_read_input_tokens"`
@@ -267,7 +268,11 @@ func ParseUsage(log string) Usage {
 		if json.Unmarshal([]byte(line), &e) != nil || e.Type != "result" {
 			continue
 		}
-		u = Usage{TokensIn: e.Usage.In + e.Usage.CacheRead + e.Usage.CacheCreate, TokensOut: e.Usage.Out, CostUSD: e.Cost, Known: true}
+		r = Result{TokensIn: e.Usage.In + e.Usage.CacheRead + e.Usage.CacheCreate, TokensOut: e.Usage.Out,
+			CostUSD: e.Cost, Known: true, AuthFailed: e.IsError && authText(e.Text)}
 	}
-	return u
+	if !r.Known && len(lines) > 0 {
+		r.AuthFailed = authText(lines[len(lines)-1])
+	}
+	return r
 }

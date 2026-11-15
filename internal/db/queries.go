@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"time"
 )
 
 type Task struct {
@@ -221,8 +220,6 @@ func (d *DB) OpenRuns(ctx context.Context) (map[int64]int, error) {
 	}
 	return out, rows.Err()
 }
-
-func Now() int64 { return time.Now().Unix() }
 
 // SetUsage records what an attempt spent, keyed by its log file.
 func (d *DB) SetUsage(ctx context.Context, logPath string, in, out int64, cost float64) {

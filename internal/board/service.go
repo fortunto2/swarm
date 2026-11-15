@@ -51,13 +51,17 @@ func newToken() string {
 
 func (s *Service) Issue(id Identity) string {
 	tok := newToken()
+	s.put(tok, id)
+	return tok
+}
+
+func (s *Service) put(tok string, id Identity) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.tokens == nil {
 		s.tokens = map[string]Identity{}
 	}
 	s.tokens[tok] = id
-	s.mu.Unlock()
-	return tok
 }
 
 func (s *Service) Revoke(tok string) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/fortunto2/swarm/internal/config"
@@ -37,23 +38,30 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		}
 		claims, _ := d.DB.WriteClaims(ctx, t.ID)
 		d.gating[t.ID] = true
-		id, wt, commit := t.ID, t.Worktree.String, t.ResultCommit.String
+		id, commit := t.ID, t.ResultCommit.String
 		allow := strings.Contains(t.Spec, allowTestsMarker)
+		dir := filepath.Join(d.Cfg.StatePath(), "gates", fmt.Sprintf("T%d-%.12s", id, commit))
 		go func() {
-			v := gate.Static(ctx, wt, base, commit, claims, allow)
+			v := gate.Static(ctx, r.Path, base, commit, claims, allow)
 			if v.OK {
-				if _, err := gitx.Run(ctx, wt, "checkout", "--quiet", "--detach", commit); err != nil {
-					v = gate.Verdict{Stage: "gate", Reason: "checkout of the submitted commit failed", Tail: err.Error()}
-				} else {
-					v = gate.Run(ctx, wt, r.Gate, r.GateTimeout.Duration)
-					_, _ = gitx.Run(ctx, wt, "checkout", "--quiet", fmt.Sprintf("swarm/T%d", id))
-				}
+				v = runGate(ctx, r, dir, commit)
 			}
 			d.results <- gateResult{taskID: id, commit: commit, v: v}
 		}()
 		d.DB.Event(ctx, "swarmd", t.ID, "gate_started", map[string]string{"commit": commit})
 	}
 	return nil
+}
+
+// runGate checks the submitted commit in a throwaway detached worktree: the worker's own
+// checkout (its untracked files, its build output, its HEAD) is never touched, and a
+// re-gate after a rebase is the same operation.
+func runGate(ctx context.Context, r config.Repo, dir, commit string) gate.Verdict {
+	if _, err := gitx.Run(ctx, r.Path, "worktree", "add", "--quiet", "--detach", dir, commit); err != nil {
+		return gate.Verdict{Stage: "gate", Reason: "could not check out the submitted commit", Tail: err.Error()}
+	}
+	defer func() { _, _ = gitx.Run(context.WithoutCancel(ctx), r.Path, "worktree", "remove", "--force", dir) }()
+	return gate.Run(ctx, dir, r.Gate, r.GateTimeout.Duration)
 }
 
 func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
@@ -66,7 +74,7 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 		map[string]string{"stage": r.v.Stage, "reason": r.v.Reason})
 	if !r.v.OK {
 		d.DB.Event(ctx, "swarmd", r.taskID, "gate_fail_detail", map[string]string{"tail": r.v.Tail})
-		d.modelFail(ctx, r.taskID, "gate_fail", r.v.Stage+": "+r.v.Reason+"\n"+r.v.Tail)
+		d.fail(ctx, r.taskID, modelFail, "gate_fail", r.v.Stage+": "+r.v.Reason+"\n"+r.v.Tail)
 		return
 	}
 	// Cross-family review lands in phase 4; until then a green gate goes straight to the queue.
@@ -107,12 +115,16 @@ func (d *Daemon) mergeOne(ctx context.Context) error {
 	if err := worktree.Remove(ctx, r.Path, wt); err != nil {
 		d.Log.Warn("worktree cleanup", "task", t.ID, "err", err)
 	}
-	d.afterMerge(ctx, t.ID, t.Repo, r.Path, t.ResultCommit.String)
+	d.bg.Add(1)
+	go func() {
+		defer d.bg.Done()
+		d.afterMerge(context.WithoutCancel(ctx), t.ID, t.Repo, r.Path, t.ResultCommit.String)
+	}()
 	return nil
 }
 
 // afterMerge runs the profile's hooks, e.g. reindexing the repo so the next worker's code
-// search sees what was just merged. Best effort, bounded, logged.
+// search sees what was just merged. Best effort, bounded, logged, off the loop.
 func (d *Daemon) afterMerge(ctx context.Context, id int64, repo, path, commit string) {
 	for _, h := range d.Cfg.Hooks.AfterMerge {
 		cmdline := strings.NewReplacer("{repo}", repo, "{path}", path, "{task}", fmt.Sprint(id), "{commit}", commit).Replace(h)
@@ -121,18 +133,11 @@ func (d *Daemon) afterMerge(ctx context.Context, id int64, repo, path, commit st
 		cancel()
 		data := map[string]string{"cmd": cmdline}
 		if err != nil {
-			data["err"], data["out"] = err.Error(), tailString(string(out), 1024)
+			data["err"], data["out"] = err.Error(), gate.Tail(string(out), 1024)
 			d.Log.Warn("after_merge hook failed", "task", id, "cmd", cmdline, "err", err)
 		}
 		d.DB.Event(ctx, "swarmd", id, "hook_after_merge", data)
 	}
-}
-
-func tailString(s string, n int) string {
-	if len(s) > n {
-		return s[len(s)-n:]
-	}
-	return s
 }
 
 // rebase: main moved since the gate. A clean rebase goes back through the gate on the new

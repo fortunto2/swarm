@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"syscall"
 	"time"
 
@@ -31,18 +33,14 @@ func (d *Daemon) promote(ctx context.Context) error {
 // pickProvider: a provider that serves the tier, is on this node and has a free slot.
 // Cheapest-first and failed-before ordering arrive with several providers (phase 4).
 func (d *Daemon) pickProvider(tier string, busy map[string]int) (string, bool) {
-	ids := make([]string, 0, len(d.adapters))
-	for id := range d.adapters {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := slices.Sorted(maps.Keys(d.adapters))
 	node, hasNode := d.Cfg.Nodes[d.Node]
 	for _, id := range ids {
 		p := d.Cfg.Providers[id]
-		if len(p.Tiers) > 0 && !contains(p.Tiers, tier) {
+		if len(p.Tiers) > 0 && !slices.Contains(p.Tiers, tier) {
 			continue
 		}
-		if hasNode && len(node.Accounts) > 0 && !contains(node.Accounts, id) {
+		if hasNode && len(node.Accounts) > 0 && !slices.Contains(node.Accounts, id) {
 			continue
 		}
 		if busy[id] < p.Slots {
@@ -85,7 +83,7 @@ func (d *Daemon) schedule(ctx context.Context) error {
 				continue
 			}
 			d.Log.Error("start failed", "task", t.ID, "err", err)
-			d.infraFail(ctx, t.ID, "crash", err.Error())
+			d.fail(ctx, t.ID, infraFail, "crash", err.Error())
 			continue
 		}
 		busy[pid]++
@@ -127,7 +125,7 @@ func (d *Daemon) start(ctx context.Context, t db.Task, pid string) error {
 		return err
 	}
 	_ = os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o600)
-	a := provider.Attempt{TaskID: t.ID, N: t.Attempts + 1, Worktree: wt.Path, Dir: dir, Prompt: prompt,
+	a := provider.Attempt{TaskID: t.ID, Worktree: wt.Path, Dir: dir, Prompt: prompt,
 		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate}
 	cmd, err := d.adapters[pid].Command(ctx, a)
 	if err != nil {
@@ -141,7 +139,7 @@ func (d *Daemon) start(ctx context.Context, t db.Task, pid string) error {
 		return err
 	}
 	_, _ = d.DB.StartAttempt(ctx, t.ID, pid, model, d.Node, logPath)
-	d.procs[t.ID] = &proc{cmd: cmd, token: tok, provider: pid, done: done, log: logPath,
+	d.procs[t.ID] = &proc{cmd: cmd, token: tok, provider: pid, done: done, log: logPath, leaseUntil: time.Now().Add(lease),
 		deadline: time.Now().Add(d.Cfg.Limits.TaskWallClock.Duration)}
 	d.DB.Event(ctx, "swarmd", t.ID, "started", map[string]string{"provider": pid, "worker": worker, "node": d.Node})
 	d.Log.Info("worker started", "task", t.ID, "provider", pid, "worker", worker)
@@ -197,7 +195,8 @@ func (d *Daemon) prompt(ctx context.Context, t db.Task, r config.Repo) (string, 
 }
 
 // reap: finished processes, wall-clock overruns, lease renewal, and running tasks that no
-// live process holds (a daemon restart) once their lease has expired.
+// live process holds (a daemon restart) once their lease has expired. Never blocks: a
+// worker that ignores SIGTERM is waited for off the loop.
 func (d *Daemon) reap(ctx context.Context) {
 	now := time.Now()
 	for id, p := range d.procs {
@@ -209,13 +208,15 @@ func (d *Daemon) reap(ctx context.Context) {
 		}
 		if now.After(p.deadline) {
 			killGroup(p.cmd)
-			<-p.done
-			d.Board.Revoke(p.token)
-			delete(d.procs, id)
-			d.modelFail(ctx, id, "timeout", "wall clock "+d.Cfg.Limits.TaskWallClock.String()+" exceeded")
+			go func() { <-p.done }()
+			d.release(id, p)
+			d.fail(ctx, id, modelFail, "timeout", "wall clock "+d.Cfg.Limits.TaskWallClock.String()+" exceeded")
 			continue
 		}
-		_ = d.DB.Set(ctx, id, map[string]any{"lease_until": now.Add(lease).Unix()})
+		if now.After(p.leaseUntil.Add(-lease / 2)) { // renew at half-life, not every tick
+			p.leaseUntil = now.Add(lease)
+			_ = d.DB.Set(ctx, id, map[string]any{"lease_until": p.leaseUntil.Unix()})
+		}
 	}
 	running, err := d.DB.TasksIn(ctx, "running")
 	if err != nil {
@@ -223,24 +224,30 @@ func (d *Daemon) reap(ctx context.Context) {
 	}
 	for _, t := range running {
 		if _, live := d.procs[t.ID]; !live && t.LeaseUntil.Valid && t.LeaseUntil.Int64 < now.Unix() {
-			d.infraFail(ctx, t.ID, "crash", "lease expired with no live worker")
+			d.fail(ctx, t.ID, infraFail, "crash", "lease expired with no live worker")
 		}
 	}
 }
 
-// finish: the process exited. If it reported, the task already moved on; if not, the
-// worker died without a word, which is the infrastructure's failure, not the model's.
-func (d *Daemon) finish(ctx context.Context, id int64, p *proc, err error) {
+func (d *Daemon) release(id int64, p *proc) {
 	d.Board.Revoke(p.token)
 	delete(d.procs, id)
-	if u := provider.ParseUsage(fileTail(p.log, 64<<10)); u.Known {
-		d.DB.SetUsage(ctx, p.log, u.TokensIn, u.TokensOut, u.CostUSD)
+}
+
+// finish: the process exited. Usage is recorded whatever happened. If it reported, the
+// task already moved on; if it could not log in, the provider is out; otherwise the worker
+// died without a word, which is the infrastructure's failure, not the model's.
+func (d *Daemon) finish(ctx context.Context, id int64, p *proc, err error) {
+	d.release(id, p)
+	res := provider.ParseResult(fileTail(p.log, 64<<10))
+	if res.Known {
+		d.DB.SetUsage(ctx, p.log, res.TokensIn, res.TokensOut, res.CostUSD)
 	}
 	t, gerr := d.DB.GetTask(ctx, id)
 	if gerr != nil || t.Status != "running" {
 		return
 	}
-	if provider.AuthFailure(fileTail(p.log, 8192)) {
+	if res.AuthFailed {
 		d.disableProvider(ctx, p.provider, "not logged in")
 		d.DB.EndAttempt(ctx, id, "crash")
 		_ = d.DB.Set(ctx, id, map[string]any{"status": "ready", "lease_until": nil})
@@ -250,7 +257,7 @@ func (d *Daemon) finish(ctx context.Context, id int64, p *proc, err error) {
 	if err != nil {
 		msg += " (" + err.Error() + ")"
 	}
-	d.infraFail(ctx, id, "crash", msg)
+	d.fail(ctx, id, infraFail, "crash", msg)
 }
 
 // disableProvider takes a provider out of this daemon's rotation and says so. Its tasks
@@ -264,11 +271,17 @@ func (d *Daemon) disableProvider(ctx context.Context, id, why string) {
 	d.notify(fmt.Sprintf("swarm %s: provider %s disabled: %s", d.Cfg.Profile.Name, id, why))
 }
 
+// notify runs the profile's notifier off the loop, bounded: a hung webhook must not stop
+// the daemon.
 func (d *Daemon) notify(msg string) {
 	if d.Cfg.Profile.Notify == "" {
 		return
 	}
-	_ = exec.Command("sh", "-c", d.Cfg.Profile.Notify+` "$1"`, "notify", msg).Run()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(ctx, "sh", "-c", d.Cfg.Profile.Notify+` "$1"`, "notify", msg).Run()
+	}()
 }
 
 func fileTail(path string, n int64) string {
@@ -277,49 +290,40 @@ func fileTail(path string, n int64) string {
 		return ""
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return ""
+	if _, err := f.Seek(-n, io.SeekEnd); err != nil {
+		_, _ = f.Seek(0, io.SeekStart) // shorter than n
 	}
-	off := st.Size() - n
-	if off < 0 {
-		off = 0
-	}
-	b := make([]byte, st.Size()-off)
-	_, _ = f.ReadAt(b, off)
+	b, _ := io.ReadAll(f)
 	return string(b)
 }
 
-func (d *Daemon) infraFail(ctx context.Context, id int64, outcome, msg string) {
-	t, err := d.DB.GetTask(ctx, id)
-	if err != nil {
-		return
-	}
-	d.DB.EndAttempt(ctx, id, outcome)
-	status := "ready"
-	if t.InfraFailures+1 >= maxInfraFailed {
-		status = "blocked"
-	}
-	_ = d.DB.Set(ctx, id, map[string]any{"status": status, "infra_failures": t.InfraFailures + 1, "lease_until": nil})
-	d.DB.Event(ctx, "swarmd", id, "infra_fail", map[string]string{"outcome": outcome, "msg": msg, "now": status})
-	d.Log.Warn("infra failure", "task", id, "msg", msg, "status", status)
-}
+type failKind int
 
-// modelFail counts against the model: gate or review failed, or it ran out of time.
-func (d *Daemon) modelFail(ctx context.Context, id int64, outcome, detail string) {
+const (
+	infraFail failKind = iota // crash, lost lease: not the model's fault, capped at maxInfraFailed
+	modelFail                 // gate, review, wall clock: counts as an attempt, capped at max_attempts
+)
+
+// fail ends the open attempt and sends the task back to ready, or to blocked when its
+// counter reaches the cap. A model failure leaves its detail for the next attempt's prompt.
+func (d *Daemon) fail(ctx context.Context, id int64, kind failKind, outcome, detail string) {
 	t, err := d.DB.GetTask(ctx, id)
 	if err != nil {
 		return
 	}
 	d.DB.EndAttempt(ctx, id, outcome)
+	col, n, limit, event := "infra_failures", t.InfraFailures+1, maxInfraFailed, "infra_fail"
+	if kind == modelFail {
+		col, n, limit, event = "attempts", t.Attempts+1, d.Cfg.Limits.MaxAttempts, "model_fail"
+		_ = d.DB.Note(ctx, t.RunID, id, "swarmd", "review", fmt.Sprintf("attempt %d: %s\n%s", n, outcome, detail))
+	}
 	status := "ready"
-	if t.Attempts+1 >= d.Cfg.Limits.MaxAttempts {
+	if n >= limit {
 		status = "blocked" // phase 2: the lead decides split / rewrite / needs_human
 	}
-	_ = d.DB.Note(ctx, t.RunID, id, "swarmd", "review", fmt.Sprintf("attempt %d: %s\n%s", t.Attempts+1, outcome, detail))
-	_ = d.DB.Set(ctx, id, map[string]any{"status": status, "attempts": t.Attempts + 1, "lease_until": nil})
-	d.DB.Event(ctx, "swarmd", id, "model_fail", map[string]string{"outcome": outcome, "now": status})
-	d.Log.Warn("attempt failed", "task", id, "outcome", outcome, "status", status)
+	_ = d.DB.Set(ctx, id, map[string]any{"status": status, col: n, "lease_until": nil})
+	d.DB.Event(ctx, "swarmd", id, event, map[string]string{"outcome": outcome, "detail": detail, "now": status})
+	d.Log.Warn(event, "task", id, "outcome", outcome, "status", status)
 }
 
 func killGroup(cmd *exec.Cmd) {
@@ -334,13 +338,4 @@ func (d *Daemon) stopAll() {
 	for _, p := range d.procs {
 		killGroup(p.cmd)
 	}
-}
-
-func contains(xs []string, x string) bool {
-	for _, y := range xs {
-		if y == x {
-			return true
-		}
-	}
-	return false
 }

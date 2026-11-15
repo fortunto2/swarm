@@ -4,8 +4,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -21,17 +22,6 @@ func load() (*config.Config, error) {
 		return nil, err
 	}
 	return config.Load(dir)
-}
-
-// notYet keeps the command surface stable from phase 0 while saying plainly what does not
-// work yet: a stub that exits 0 would read as success.
-func notYet(use, short, phase string) *cobra.Command {
-	return &cobra.Command{
-		Use: use, Short: short + " (" + phase + ")",
-		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("%s: not implemented yet, lands in %s (docs/plan.md)", use, phase)
-		},
-	}
 }
 
 func main() {
@@ -91,7 +81,7 @@ func main() {
 				return err
 			}
 			defer d.Close()
-			counts, err := d.StatusCounts(context.Background(), 0)
+			counts, err := d.StatusCounts(context.Background())
 			if err != nil {
 				return err
 			}
@@ -100,13 +90,8 @@ func main() {
 				fmt.Fprintf(out, "profile %s: no tasks\n", c.Profile.Name)
 				return nil
 			}
-			keys := make([]string, 0, len(counts))
-			for k := range counts {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
 			fmt.Fprintf(out, "profile %s\n", c.Profile.Name)
-			for _, k := range keys {
+			for _, k := range slices.Sorted(maps.Keys(counts)) {
 				fmt.Fprintf(out, "  %-12s %d\n", k, counts[k])
 			}
 			return nil
@@ -114,13 +99,6 @@ func main() {
 	})
 
 	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd())
-	root.AddCommand(
-		notYet("run <spec.md>", "Start a run: lead builds the tree, workers execute", "phase 2"),
-		notYet("logs <task>", "Event stream of a task's attempt", "phase 1"),
-		notYet("stop", "SIGTERM every worker group, running tasks back to ready", "phase 5"),
-		notYet("pause", "Start no new workers", "phase 5"),
-		notYet("report", "Per provider: attempts, accepted, cooling, 429s", "phase 4"),
-	)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "swarm:", err)

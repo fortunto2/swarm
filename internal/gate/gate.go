@@ -27,12 +27,15 @@ type Verdict struct {
 
 const tailBytes = 4096
 
-func tail(s string) string {
-	if len(s) > tailBytes {
-		return "…" + s[len(s)-tailBytes:]
+// Tail keeps the last n bytes of an output, marked when cut.
+func Tail(s string, n int) string {
+	if len(s) > n {
+		return "…" + s[len(s)-n:]
 	}
 	return s
 }
+
+func tail(s string) string { return Tail(s, tailBytes) }
 
 var testFile = regexp.MustCompile(`(^|/)(test_[^/]*\.py|[^/]*_test\.(go|py)|[^/]*\.(test|spec)\.[jt]sx?|tests?/.*)$`)
 

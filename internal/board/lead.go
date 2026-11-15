@@ -32,14 +32,7 @@ func OperatorToken(stateDir string) (string, error) {
 
 // IssueFixed registers a token the caller already holds (the operator token survives
 // daemon restarts; attempt tokens do not).
-func (s *Service) IssueFixed(tok string, id Identity) {
-	s.mu.Lock()
-	if s.tokens == nil {
-		s.tokens = map[string]Identity{}
-	}
-	s.tokens[tok] = id
-	s.mu.Unlock()
-}
+func (s *Service) IssueFixed(tok string, id Identity) { s.put(tok, id) }
 
 func (s *Service) lead(tok string) (Identity, error) {
 	id, err := s.who(tok)
@@ -143,7 +136,7 @@ func (s *Service) Status(ctx context.Context, tok string) (StatusView, error) {
 	if _, err := s.lead(tok); err != nil {
 		return StatusView{}, err
 	}
-	counts, err := s.DB.StatusCounts(ctx, 0)
+	counts, err := s.DB.StatusCounts(ctx)
 	if err != nil {
 		return StatusView{}, err
 	}
