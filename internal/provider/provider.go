@@ -11,9 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/envx"
@@ -406,6 +408,38 @@ type Result struct {
 	Known               bool   // a final result event was found
 	AuthFailed          bool   // the CLI could not log in: not the task's fault, the provider is out
 	Refused             string // the model refused the task under its usage policy: retrying will not help
+	LimitedUntil        int64  // the subscription's limit was hit: unix time it resets (0 = not limited)
+}
+
+// limitRe: the CLI's words when an account is out of quota, e.g. "You've hit your 5-hour
+// limit · resets 9:10pm (UTC)". Measured on a box sharing one account with scheduled jobs.
+var limitRe = regexp.MustCompile(`(?i)hit your ([\w-]+) limit\b[^\n]*?resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)?\s*\(UTC\)`)
+var limitAny = regexp.MustCompile(`(?i)hit your [\w-]+ limit`)
+
+// LimitReset: when a limit message says the quota comes back; the next occurrence of the
+// stated UTC time, or five hours on when the time cannot be read.
+func LimitReset(text string, now time.Time) int64 {
+	m := limitRe.FindStringSubmatch(text)
+	if m == nil {
+		if limitAny.MatchString(text) {
+			return now.Add(5 * time.Hour).Unix()
+		}
+		return 0
+	}
+	hour, _ := strconv.Atoi(m[2])
+	minute := 0
+	if m[3] != "" {
+		minute, _ = strconv.Atoi(m[3])
+	}
+	if m[4] != "" {
+		hour = hour%12 + map[bool]int{true: 12, false: 0}[strings.EqualFold(m[4], "pm")]
+	}
+	u := now.UTC()
+	t := time.Date(u.Year(), u.Month(), u.Day(), hour, minute, 0, 0, time.UTC)
+	for !t.After(u) {
+		t = t.Add(24 * time.Hour)
+	}
+	return t.Unix()
 }
 
 // refusalPatterns: the CLI's wording when a session is stopped by the model's safeguards.
@@ -450,9 +484,14 @@ func ParseResult(log string) Result {
 		if e.IsError && slices.ContainsFunc(refusalPatterns, func(p string) bool { return strings.Contains(e.Text, p) }) {
 			r.Refused = e.Text
 		}
+		if e.IsError {
+			r.LimitedUntil = LimitReset(e.Text, time.Now())
+		}
 	}
 	if !r.Known && len(lines) > 0 {
-		r.AuthFailed = authText(lines[len(lines)-1])
+		last := lines[len(lines)-1]
+		r.AuthFailed = authText(last)
+		r.LimitedUntil = LimitReset(last, time.Now())
 	}
 	return r
 }

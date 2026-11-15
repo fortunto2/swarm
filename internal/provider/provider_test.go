@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fortunto2/swarm/internal/config"
 )
@@ -247,5 +248,23 @@ func TestSecretsStayOutOfEnvAndFiles(t *testing.T) {
 	idx := cfg.MCPServers["idx"]
 	if idx.Command != "solo" || strings.Join(idx.Args, " ") != "secret exec idx=IDX_TOKEN -- idx serve" || idx.Env["MODE"] != "ro" || idx.Env["IDX_TOKEN"] != "" {
 		t.Fatalf("mcp server not wrapped: %+v", idx)
+	}
+}
+
+func TestLimitReset(t *testing.T) {
+	now := time.Date(2026, 11, 12, 19, 30, 0, 0, time.UTC)
+	msg := "You've hit your 5-hour limit · resets 9:10pm (UTC)"
+	if got := LimitReset(msg, now); got != time.Date(2026, 11, 12, 21, 10, 0, 0, time.UTC).Unix() {
+		t.Fatalf("got %v", time.Unix(got, 0).UTC())
+	}
+	if got := LimitReset(msg, time.Date(2026, 11, 12, 22, 0, 0, 0, time.UTC)); got != time.Date(2026, 11, 13, 21, 10, 0, 0, time.UTC).Unix() {
+		t.Fatalf("past today -> tomorrow, got %v", time.Unix(got, 0).UTC())
+	}
+	if LimitReset("RESULT: fail", now) != 0 {
+		t.Fatal("no limit, no reset")
+	}
+	r := ParseResult(`{"type":"result","is_error":true,"result":"` + msg + `"}`)
+	if r.LimitedUntil == 0 || r.AuthFailed {
+		t.Fatalf("%+v", r)
 	}
 }

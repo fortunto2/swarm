@@ -946,3 +946,27 @@ func TestBranchModeOnARemoteTrackingRef(t *testing.T) {
 		t.Fatalf("ff on a full ref must be refused: %v\n%s", err, out)
 	}
 }
+
+// A worker that hits the subscription's limit cools its provider until the reset; the task
+// waits in ready with no attempt counted, and the daemon does not spin.
+func TestLimitHitCoolsProviderWithoutPenalty(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, `echo '{"type":"result","is_error":true,"result":"You'"'"'ve hit your 5-hour limit · resets 9:10pm (UTC)"}'
+exit 1
+`, 4)
+	addTask(t, prof, "")
+	out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle")
+	if err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if strings.Count(out, "worker started") != 1 {
+		t.Fatalf("want one attempt, then a pause:\n%s", out)
+	}
+	if st := status(t, prof); !strings.Contains(st, "ready        1") {
+		t.Fatalf("want the task back in ready:\n%s", st)
+	}
+	prov, _ := swarm(t, prof, 30*time.Second, "providers")
+	if !strings.Contains(prov, "cooling until") || !strings.Contains(prov, "limit hit") {
+		t.Fatalf("provider not cooling:\n%s", prov)
+	}
+}

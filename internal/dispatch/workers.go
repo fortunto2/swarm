@@ -364,6 +364,18 @@ func (d *Daemon) finish(ctx context.Context, id int64, p *proc, err error) {
 		}
 		return
 	}
+	if res.LimitedUntil > 0 {
+		// the account is out of quota: not the task's fault, not worth a retry before the reset
+		why := "subscription limit hit (" + p.provider + ")"
+		_ = d.DB.CoolProvider(ctx, p.provider, res.LimitedUntil, why)
+		d.DB.Event(ctx, "swarmd", 0, "provider_cooling", map[string]string{"provider": p.provider, "why": why,
+			"until": time.Unix(res.LimitedUntil, 0).UTC().Format(time.RFC3339)})
+		if d.DB.Move(ctx, "swarmd", id, []db.Status{db.Running}, db.Ready, db.Patch{ClearLease: true}) == nil {
+			d.DB.EndAttempt(ctx, id, "quota")
+		}
+		d.Log.Warn("provider cooling: limit hit", "provider", p.provider, "until", time.Unix(res.LimitedUntil, 0).UTC())
+		return
+	}
 	if res.AuthFailed {
 		d.disableProvider(ctx, p.provider, "not logged in")
 		if d.DB.Move(ctx, "swarmd", id, []db.Status{db.Running}, db.Ready, db.Patch{ClearLease: true}) == nil {
