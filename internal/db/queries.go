@@ -634,3 +634,10 @@ func (d *DB) Report(ctx context.Context, since int64) (Report, error) {
 	}
 	return r, nil
 }
+
+// RunTopic: the harness topic a run serves ("" when none).
+func (d *DB) RunTopic(ctx context.Context, runID int64) string {
+	var topic string
+	_ = d.QueryRowContext(ctx, `SELECT coalesce(topic,'') FROM runs WHERE id=?`, runID).Scan(&topic)
+	return topic
+}

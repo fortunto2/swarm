@@ -828,13 +828,16 @@ func TestRedactionFilter(t *testing.T) {
 func TestStatusHookAndReport(t *testing.T) {
 	repo := testbed(t)
 	log := filepath.Join(t.TempDir(), "moves")
-	prof := profile(t, repo, goodWorker, 4, fmt.Sprintf("\n[hooks]\non_status = [\"echo {task} {status} >> %s\"]\n", log))
-	addTask(t, prof, "")
+	prof := profile(t, repo, goodWorker, 4, fmt.Sprintf("\n[hooks]\non_status = [\"echo {task} {status} {topic} >> %s\"]\n", log))
+	if out, err := swarm(t, prof, 30*time.Second, "task", "add", "--files", "**", "--repo", "app", "--topic", "billing#3",
+		"--title", "t", "--spec", "s", "--acceptance", "a"); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
 	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
 		t.Fatalf("daemon: %v\n%s", err, out)
 	}
 	moves, _ := os.ReadFile(log)
-	for _, want := range []string{"1 running", "1 verifying", "1 merging", "1 merged"} {
+	for _, want := range []string{"1 running billing#3", "1 verifying billing#3", "1 merging billing#3", "1 merged billing#3"} {
 		if !strings.Contains(string(moves), want) {
 			t.Errorf("on_status missed %q:\n%s", want, moves)
 		}

@@ -444,7 +444,8 @@ func (d *Daemon) statusHook(id int64, to db.Status) {
 	go func() {
 		defer d.bg.Done()
 		r := strings.NewReplacer("{task}", strconv.FormatInt(id, 10), "{title}", shellSafe(t.Title),
-			"{status}", string(to), "{worktree}", wt, "{repo}", t.Repo)
+			"{status}", string(to), "{worktree}", wt, "{repo}", t.Repo,
+			"{topic}", shellSafe(d.DB.RunTopic(context.Background(), t.RunID)), "{commit}", t.ResultCommit.String)
 		for _, h := range d.Cfg.Hooks.OnStatus {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			_ = exec.CommandContext(ctx, "sh", "-c", r.Replace(h)).Run()

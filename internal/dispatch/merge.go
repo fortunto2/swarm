@@ -165,7 +165,7 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	d.bg.Add(1)
 	go func() {
 		defer d.bg.Done()
-		d.afterMerge(context.WithoutCancel(ctx), t.ID, t.Repo, r.Path, t.ResultCommit.String)
+		d.afterMerge(context.WithoutCancel(ctx), t, r.Path)
 	}()
 	return nil
 }
@@ -182,9 +182,11 @@ func (d *Daemon) blockMerge(ctx context.Context, t db.Task, err error) {
 
 // afterMerge runs the profile's hooks, e.g. reindexing the repo so the next worker's code
 // search sees what was just merged. Best effort, bounded, logged, off the loop.
-func (d *Daemon) afterMerge(ctx context.Context, id int64, repo, path, commit string) {
+func (d *Daemon) afterMerge(ctx context.Context, t db.Task, path string) {
+	id := t.ID
 	for _, h := range d.Cfg.Hooks.AfterMerge {
-		cmdline := strings.NewReplacer("{repo}", repo, "{path}", path, "{task}", fmt.Sprint(id), "{commit}", commit).Replace(h)
+		cmdline := strings.NewReplacer("{repo}", t.Repo, "{path}", path, "{task}", fmt.Sprint(id), "{commit}", t.ResultCommit.String,
+			"{topic}", shellSafe(d.DB.RunTopic(ctx, t.RunID)), "{title}", shellSafe(t.Title)).Replace(h)
 		hctx, cancel := context.WithTimeout(ctx, d.Cfg.Hooks.Timeout.Duration)
 		out, err := exec.CommandContext(hctx, "sh", "-c", cmdline).CombinedOutput()
 		cancel()

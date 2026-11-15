@@ -115,7 +115,8 @@ type MCPServer struct {
 type Hooks struct {
 	AfterMerge []string `toml:"after_merge" json:"after_merge,omitempty"`
 	// OnStatus runs on every status change of a task, e.g. to mirror tasks on a board.
-	// Placeholders: {task}, {title}, {status}, {worktree}, {repo}. Best effort, bounded.
+	// Placeholders: {task}, {title}, {status}, {worktree}, {repo}, {topic}, {commit}.
+	// Best effort, bounded. after_merge has {repo} {path} {task} {commit} {topic} {title}.
 	OnStatus []string `toml:"on_status" json:"on_status,omitempty"`
 	Timeout  Duration `toml:"timeout" json:"timeout,omitempty"`
 }
