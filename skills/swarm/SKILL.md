@@ -31,11 +31,15 @@ Each task is 15–60 minutes of work. Smaller ones waste a worker's start-up; bi
 fail the wall clock. For each:
 
 - `--title`: one line.
-- `--spec`: what to change and where. Name the files and functions. If the task may
+- `--spec`: what to change and where. Name the files and functions, and the pattern the
+  repo already uses for the same thing (a worker that is not told invents a second one, e.g.
+  a manual migration where the code already adds columns at runtime). If the task may
   rewrite or remove tests, the spec must contain `[allow-test-changes]`; otherwise a
   deleted or skipped test fails the gate.
 - `--acceptance`: how the gate will see it is done, in terms of the repo's gate commands
-  ("`go test ./...` passes and `TestTwo` exists"). "Works" is not acceptance.
+  ("`go test ./...` passes and `TestTwo` exists"). "Works" is not acceptance. When another
+  program reads the output, a test of the output's exact shape belongs here: a library
+  printing a banner to stdout passes every unit test and breaks the reader.
 - `--files`: the files (or `dir/` prefixes) the task may write. Two tasks running at once
   must not share a file. Lock files, migrations and generated code belong to one task.
 - `--tier`: `A` for hard work, `B` for routine. `S` is reserved for the lead.
