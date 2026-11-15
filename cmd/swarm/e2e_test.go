@@ -1132,13 +1132,17 @@ func TestAdmitHoldsWorkUntilTheHostSaysYes(t *testing.T) {
 	}
 	addTask(t, prof, "two.go,two_test.go")
 	log := &lockedBuffer{}
-	daemon := exec.Command(bin, "--profile", prof, "daemon", "--until-idle")
-	daemon.Stdout, daemon.Stderr = log, log
-	if err := daemon.Start(); err != nil {
-		t.Fatal(err)
+	start := func() (*exec.Cmd, chan error) {
+		d := exec.Command(bin, "--profile", prof, "daemon")
+		d.Stdout, d.Stderr = log, log
+		if err := d.Start(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- d.Wait() }()
+		return d, done
 	}
-	done := make(chan error, 1)
-	go func() { done <- daemon.Wait() }()
+	daemon, done := start()
 	defer func() { _ = daemon.Process.Kill() }()
 	time.Sleep(5 * time.Second)
 	if st := status(t, prof); !strings.Contains(st, "ready        1") {
@@ -1146,23 +1150,28 @@ func TestAdmitHoldsWorkUntilTheHostSaysYes(t *testing.T) {
 	} else if !strings.Contains(st, "held since") || !strings.Contains(st, "another job runs") {
 		t.Fatalf("status does not say why ready work waits:\n%s", st)
 	}
+	// the daemon goes away while holding: its last answer must not read as the present
+	_ = daemon.Process.Signal(os.Interrupt)
+	<-done
+	if st := status(t, prof); strings.Contains(st, "held since") || !strings.Contains(st, "daemon not running") {
+		t.Fatalf("a stopped daemon's hold is shown as current:\n%s", st)
+	}
 	if err := os.WriteFile(gateFile, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("daemon: %v\n%s", err, log.String())
+	daemon, done = start()
+	deadline := time.Now().Add(2 * time.Minute)
+	for st := status(t, prof); !strings.Contains(st, "merged       1"); st = status(t, prof) {
+		if time.Now().After(deadline) {
+			t.Fatalf("not merged after the host admitted:\n%s\n%s", st, log.String())
 		}
-	case <-time.After(2 * time.Minute):
-		t.Fatalf("not done after the host admitted:\n%s", log.String())
+		time.Sleep(time.Second)
 	}
-	if st := status(t, prof); !strings.Contains(st, "merged       1") {
-		t.Fatalf("want merged:\n%s\n%s", st, log.String())
+	if st := status(t, prof); strings.Contains(st, "held since") || strings.Contains(st, "daemon not running") {
+		t.Fatalf("a running daemon that admitted still shows a hold:\n%s", st)
 	}
-	if st := status(t, prof); strings.Contains(st, "held since") {
-		t.Fatalf("status still shows a hold after the host admitted:\n%s", st)
-	}
+	_ = daemon.Process.Signal(os.Interrupt)
+	<-done
 	if !strings.Contains(log.String(), `"msg":"held","why":"another job runs"`) {
 		t.Fatalf("the hold and its reason are not in the log:\n%s", log.String())
 	}

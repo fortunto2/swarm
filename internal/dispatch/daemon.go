@@ -28,6 +28,7 @@ import (
 	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/provider"
 	"github.com/fortunto2/swarm/internal/redact"
+	"github.com/fortunto2/swarm/internal/shellx"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
@@ -469,7 +470,7 @@ func (d *Daemon) statusHook(id int64, to db.Status) {
 			"{topic}", shellSafe(d.DB.RunTopic(context.Background(), t.RunID)), "{commit}", t.ResultCommit.String)
 		for _, h := range d.Cfg.Hooks.OnStatus {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			_ = exec.CommandContext(ctx, "sh", "-c", r.Replace(h)).Run()
+			_ = shellx.Command(ctx, r.Replace(h)).Run()
 			cancel()
 		}
 	}()
@@ -495,7 +496,7 @@ func (d *Daemon) askAdmit() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), admitTimeout)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "sh", "-c", cmdline).CombinedOutput()
+		out, err := shellx.Command(ctx, cmdline).CombinedOutput()
 		a := admission{ok: err == nil, at: time.Now(), checked: true}
 		if !a.ok {
 			a.why = strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0])

@@ -14,7 +14,7 @@ func TestSinceTakesDays(t *testing.T) {
 			t.Errorf("Set(%q) = %v, %v; want %v", in, time.Duration(d), err, want)
 		}
 	}
-	for _, bad := range []string{"xd", "-1d", "7w"} {
+	for _, bad := range []string{"xd", "-1d", "7w", "999999999999d"} {
 		var d days
 		if err := d.Set(bad); err == nil {
 			t.Errorf("Set(%q) accepted", bad)

@@ -13,11 +13,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/fortunto2/swarm/internal/envx"
 	"github.com/fortunto2/swarm/internal/gitx"
+	"github.com/fortunto2/swarm/internal/shellx"
 )
 
 type Verdict struct {
@@ -240,15 +240,10 @@ func Run(ctx context.Context, wt string, cmds []string, timeout time.Duration, r
 
 func runOne(ctx context.Context, wt, c string, timeout time.Duration) Verdict {
 	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, "sh", "-c", c)
+	cmd := shellx.Command(ctx, c) // its own process group, killed whole on timeout
 	cmd.Dir = wt
 	cmd.Env = envx.Minimal() // the gate runs the worker's code: it gets no credentials either
 	cmd.Stdout, cmd.Stderr = &out, &out
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	// A child that left the group (setsid) can hold the output pipe forever: stop waiting
-	// for it after this, or one stray daemon in a test wedges the gate queue.
-	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		return Verdict{Stage: "gate", Reason: c + ": timeout after " + timeout.String(), Tail: tail(out.String())}

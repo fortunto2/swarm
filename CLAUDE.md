@@ -17,6 +17,7 @@ Setting it up for yourself: [`docs/setup.md`](docs/setup.md). Using it from a se
 | `internal/board` | the one door for agents: an op table (role, input type, handler) served over a unix socket and as MCP |
 | `internal/gate` | static checks (claims, tests deleted/skipped/shrunk, protected paths) and the repo's gate commands |
 | `internal/provider` | turns an attempt into a `claude` process: allowed tools, deny rules, OS sandbox (strict), env, MCP config |
+| `internal/shellx` | every profile shell command (gate, hooks, notify, admit): own process group, killed whole on timeout |
 | `internal/envx`, `gitx`, `redact`, `worktree`, `prompts` | small helpers |
 
 ## Rules for changes

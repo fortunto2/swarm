@@ -18,6 +18,7 @@ import (
 	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/prompts"
 	"github.com/fortunto2/swarm/internal/provider"
+	"github.com/fortunto2/swarm/internal/shellx"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
@@ -415,7 +416,7 @@ func (d *Daemon) notify(msg string) {
 		d.notifyMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = exec.CommandContext(ctx, "sh", "-c", d.Cfg.Profile.Notify+` "$1"`, "notify", msg).Run()
+		_ = shellx.Command(ctx, d.Cfg.Profile.Notify+` "$1"`, "notify", msg).Run()
 		return
 	}
 	d.bg.Add(1) // awaited on exit: the last notification (run done) must not be lost
@@ -424,7 +425,7 @@ func (d *Daemon) notify(msg string) {
 		defer d.bg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = exec.CommandContext(ctx, "sh", "-c", d.Cfg.Profile.Notify+` "$1"`, "notify", msg).Run()
+		_ = shellx.Command(ctx, d.Cfg.Profile.Notify+` "$1"`, "notify", msg).Run()
 	}()
 }
 

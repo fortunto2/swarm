@@ -105,7 +105,10 @@ func main() {
 			for _, k := range slices.Sorted(maps.Keys(counts)) {
 				fmt.Fprintf(out, "  %-12s %d\n", k, counts[k])
 			}
-			if why, since, held := d.Held(context.Background()); held && c.Limits.Admit != "" {
+			if !dispatch.Running(c.StatePath()) {
+				// a hold recorded by a daemon that is gone says nothing about now
+				fmt.Fprintln(out, "  daemon not running: nothing starts until `swarm daemon` runs")
+			} else if why, since, held := d.Held(context.Background()); held && c.Limits.Admit != "" {
 				fmt.Fprintf(out, "  held since %s: %s (limits.admit; nothing new starts)\n",
 					time.Unix(since, 0).UTC().Format("01-02 15:04Z"), why)
 			}

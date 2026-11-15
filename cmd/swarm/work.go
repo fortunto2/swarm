@@ -404,8 +404,8 @@ type days time.Duration
 func (d *days) Set(v string) error {
 	if n, ok := strings.CutSuffix(v, "d"); ok {
 		k, err := strconv.Atoi(n)
-		if err != nil || k < 0 {
-			return fmt.Errorf("%q: want a whole number of days, e.g. 7d", v)
+		if err != nil || k < 0 || k > 36500 { // past ~100 years a Duration overflows
+			return fmt.Errorf("%q: want a whole number of days up to 36500, e.g. 7d", v)
 		}
 		*d = days(time.Duration(k) * 24 * time.Hour)
 		return nil

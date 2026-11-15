@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
+	"github.com/fortunto2/swarm/internal/shellx"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
@@ -198,7 +198,7 @@ func (d *Daemon) afterMerge(ctx context.Context, t db.Task, path string) {
 		cmdline := strings.NewReplacer("{repo}", t.Repo, "{path}", path, "{task}", fmt.Sprint(id), "{commit}", t.ResultCommit.String,
 			"{topic}", shellSafe(d.DB.RunTopic(ctx, t.RunID)), "{title}", shellSafe(t.Title)).Replace(h)
 		hctx, cancel := context.WithTimeout(ctx, d.Cfg.Hooks.Timeout.Duration)
-		out, err := exec.CommandContext(hctx, "sh", "-c", cmdline).CombinedOutput()
+		out, err := shellx.Command(hctx, cmdline).CombinedOutput()
 		cancel()
 		data := map[string]string{"cmd": cmdline}
 		if err != nil {
