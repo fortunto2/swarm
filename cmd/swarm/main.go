@@ -47,6 +47,11 @@ func main() {
 			if err != nil {
 				return err
 			}
+			if c.Node != nil { // a node: its repos are copies, their mains are the coordinator's business
+				fmt.Fprintf(cmd.OutOrStdout(), "ok: node %s (profile %s), %d repo(s), coordinator: %s\n",
+					c.Node.Name, c.Profile.Name, len(c.Repos), strings.Join(c.Node.Coordinator, " "))
+				return nil
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "ok: profile %s, %d repo(s), %d provider(s), %d node(s), db %s\n",
 				c.Profile.Name, len(c.Repos), len(c.Providers), len(c.Nodes), c.DBPath())
 			for _, name := range slices.Sorted(maps.Keys(c.Repos)) {

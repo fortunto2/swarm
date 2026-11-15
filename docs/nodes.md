@@ -29,7 +29,8 @@ bridges to the daemon's node socket. Over it, three operations:
 | `node_report` | node | started (pid, base), exited (error, log tail), pushed, gate verdict |
 
 Orders: `start` an attempt, `kill` one, `push` the task branch, `gate` a commit, `cleanup`
-a worktree. Workers on the node use a local board socket that `swarm node` forwards to
+a worktree, `status` (a task of this node moved: the node runs its own `hooks.on_status`,
+with `{worktree}` its path there, so a board or card on that machine follows its tasks). Workers on the node use a local board socket that `swarm node` forwards to
 the coordinator, so `swarm gate`, `swarm board` and the board MCP work unchanged.
 
 ## Who does what

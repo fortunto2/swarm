@@ -167,13 +167,12 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapte
 		if err := d.DB.SetBase(ctx, t.ID, base); err != nil {
 			return fail(err)
 		}
-	} else if fresh, _ := untouched(ctx, wt.Path, base); fresh {
-		// A retry of a task that never committed anything: start it from main as it is now,
-		// or it keeps missing what merged since (seen live: a retried task could not see the
-		// files it was asked to test, committed after its first attempt).
-		if _, err := gitx.Run(ctx, wt.Path, "reset", "--quiet", "--hard", base); err != nil {
-			return fail(fmt.Errorf("refresh worktree: %w", err))
-		}
+	} else if moved, err := worktree.Refresh(ctx, wt.Path, base); err != nil {
+		return fail(fmt.Errorf("refresh worktree: %w", err))
+	} else if moved {
+		// A retry starts from main as it is now, its commits on top, or it keeps missing what
+		// merged since (seen live: a retried task could not see the files it was asked to
+		// test; another kept failing on a test main had fixed).
 		_ = d.DB.SetBase(ctx, t.ID, base)
 	}
 	dir := filepath.Join(d.Cfg.StatePath(), "attempts", worker)
@@ -235,7 +234,7 @@ func (d *Daemon) applyStart(ctx context.Context, s started) {
 		delete(d.early, s.p.worker)
 		defer d.applyNode(ctx, ev) // a report that arrived before this start was applied
 	}
-	if len(d.Cfg.Hooks.OnStatus) > 0 {
+	if len(d.Cfg.Hooks.OnStatus) > 0 || s.p.node != "" {
 		d.statusHook(s.taskID, db.Running) // now the worktree exists for a board to label
 	}
 	d.DB.Event(ctx, "swarmd", s.taskID, "started", map[string]string{"provider": pid, "log": s.p.log, "node": node})
@@ -629,18 +628,7 @@ func overlapping(claims []string, inFlight map[int64][]string) int64 {
 	return 0
 }
 
-// untouched: the worktree has no commits of its own over main and no local changes.
-func untouched(ctx context.Context, wt, main string) (bool, error) {
-	ahead, err := gitx.Run(ctx, wt, "rev-list", "--count", main+"..HEAD")
-	if err != nil || ahead != "0" {
-		return false, err
-	}
-	dirty, err := gitx.Run(ctx, wt, "status", "--porcelain")
-	return err == nil && dirty == "", err
-}
 
-// Untouched: a worktree with no commit over main and no edits; a retry may reset it.
-func Untouched(ctx context.Context, wt, main string) (bool, error) { return untouched(ctx, wt, main) }
 
 // FileTail: the last n bytes of a file (a worker's log).
 func FileTail(path string, n int64) string { return fileTail(path, n) }

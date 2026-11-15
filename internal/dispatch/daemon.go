@@ -171,7 +171,7 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	d.Board.IssueFixed(op, board.Identity{Role: "lead"})
 	d.Board.Locate = d.locate
 	d.Board.Notify = d.notify
-	if len(d.Cfg.Hooks.OnStatus) > 0 {
+	if len(d.Cfg.Hooks.OnStatus) > 0 || d.hub != nil {
 		d.DB.OnMove = func(id int64, to db.Status) {
 			if to != db.Running { // running is announced once the worker (and its worktree) exists
 				d.statusHook(id, to)
@@ -502,6 +502,12 @@ func (d *Daemon) statusHook(id int64, to db.Status) {
 	if err != nil {
 		return
 	}
+	if node := d.onNode(t); node != "" { // the node's own hooks see its worktree
+		d.hub.order(node, board.NodeCmd{Kind: "status", Task: id, Repo: t.Repo, Status: string(to), Title: t.Title})
+	}
+	if len(d.Cfg.Hooks.OnStatus) == 0 {
+		return
+	}
 	wt := d.locate(t).Path
 	d.notifyMu.Lock()
 	if d.closing {
@@ -522,6 +528,9 @@ func (d *Daemon) statusHook(id int64, to db.Status) {
 		}
 	}()
 }
+
+// ShellSafe: a title goes into a shell command line (a hook); keep it to plain characters.
+func ShellSafe(s string) string { return shellSafe(s) }
 
 // shellSafe: a title goes into a shell command line; keep it to plain characters.
 func shellSafe(s string) string {

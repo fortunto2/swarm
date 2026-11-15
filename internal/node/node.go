@@ -408,6 +408,8 @@ func (n *Node) do(ctx context.Context, c board.NodeCmd) {
 		n.gate(ctx, c)
 	case "cleanup":
 		n.cleanup(ctx, c.Task)
+	case "status":
+		n.statusHooks(ctx, c)
 	default:
 		n.Log.Warn("unknown order", "kind", c.Kind)
 	}
@@ -475,12 +477,11 @@ func (n *Node) start(ctx context.Context, c board.NodeCmd) {
 	base := ""
 	if created {
 		base = c.Base
-	} else if fresh, _ := dispatch.Untouched(ctx, wt.Path, c.Base); fresh {
-		if _, err := gitx.Run(ctx, wt.Path, "reset", "--quiet", "--hard", c.Base); err != nil {
-			fail(fmt.Errorf("refresh worktree: %w", err))
-			return
-		}
-		base = c.Base
+	} else if moved, err := worktree.Refresh(ctx, wt.Path, c.Base); err != nil {
+		fail(fmt.Errorf("refresh worktree: %w", err))
+		return
+	} else if moved {
+		base = c.Base // a retry, on main as it is now with its commits on top
 	}
 	dir := filepath.Join(n.Cfg.StatePath(), "attempts", c.Worker)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -612,6 +613,23 @@ func (n *Node) gate(ctx context.Context, c board.NodeCmd) {
 	defer func() { _, _ = gitx.Run(context.WithoutCancel(ctx), r.Path, "worktree", "remove", "--force", dir) }()
 	n.Log.Info("gate started", "task", c.Task, "commit", c.Commit)
 	verdict(gate.Run(ctx, dir, v.Gate, v.GateTimeout.Duration, v.Reruns))
+}
+
+// statusHooks runs this node's hooks.on_status for a task of its own: {task} {status}
+// {title} {repo} {worktree} (here), each bounded, best effort, as the daemon runs its own.
+func (n *Node) statusHooks(ctx context.Context, c board.NodeCmd) {
+	if len(n.Cfg.Hooks.OnStatus) == 0 {
+		return
+	}
+	safe := dispatch.ShellSafe(c.Title)
+	wt := worktree.For(n.Cfg.Profile.WorktreeRoot, c.Repo, c.Task).Path
+	r := strings.NewReplacer("{task}", strconv.FormatInt(c.Task, 10), "{status}", c.Status, "{title}", safe,
+		"{repo}", c.Repo, "{worktree}", wt)
+	for _, h := range n.Cfg.Hooks.OnStatus {
+		hctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		_ = shellx.Command(hctx, r.Replace(h)).Run()
+		cancel()
+	}
 }
 
 func (n *Node) cleanup(ctx context.Context, task int64) {

@@ -50,3 +50,23 @@ func Remove(ctx context.Context, repo string, wt WT) error {
 }
 
 func statErr(p string) error { _, err := os.Stat(p); return err }
+
+// Refresh brings a reused worktree up to base before another attempt. A worktree with no
+// commit over base fast-forwards to it; one with commits is rebased onto it, so the next
+// attempt and its gate see what merged meanwhile (live: a retried task kept failing on a
+// test main had already fixed). A worktree with edits, or a rebase that conflicts (undone),
+// is left as it was, for the worker. moved says it now sits on base.
+func Refresh(ctx context.Context, path, base string) (moved bool, err error) {
+	if gitx.IsAncestor(ctx, path, base, "HEAD") {
+		return false, nil // already on it
+	}
+	dirty, err := gitx.Run(ctx, path, "status", "--porcelain")
+	if err != nil || dirty != "" {
+		return false, err
+	}
+	if _, err := gitx.Run(ctx, path, "rebase", "--quiet", base); err != nil {
+		_, _ = gitx.Run(ctx, path, "rebase", "--abort")
+		return false, nil
+	}
+	return true, nil
+}

@@ -61,7 +61,7 @@ gate_on = %q
 
 [limits]
 max_workers = 2
-task_wall_clock = "1m"
+task_wall_clock = "3m"   # an attempt runs go vet and go test twice; a loaded machine took over 1m
 max_attempts = 3
 node_timeout = "3s"
 
@@ -140,6 +140,8 @@ command = ["/bin/false"]
 		"--acceptance", "x", "--files", "x.go", "--runs-on", "gpu"); err == nil || !strings.Contains(out, "no node has that label") {
 		t.Fatalf("a label no node has was accepted: %v\n%s", err, out)
 	}
+	seen := filepath.Join(t.TempDir(), "statuses")
+	sh(t, nodeProf, fmt.Sprintf(`printf '\n[hooks]\non_status = ["echo {task} {status} >> %s"]\n' >> swarm.toml`, seen))
 	_, nlog := startNode(t, nodeProf)
 	daemon := exec.Command(bin, "--profile", coord, "daemon", "--until-idle")
 	var dlog bytes.Buffer
@@ -182,6 +184,11 @@ command = ["/bin/false"]
 		t.Fatal("a worktree was made on the coordinator")
 	}
 	sh(t, clone, "git rev-parse --verify -q refs/swarm/main/app >/dev/null") // the node fetched the coordinator's main
+	// the node's own status hooks heard its task move (a board or card on that machine)
+	waitFor(t, 10*time.Second, func() bool {
+		b, _ := os.ReadFile(seen)
+		return strings.Contains(string(b), "1 running") && strings.Contains(string(b), "1 verifying")
+	}, "the node's on_status hooks did not hear the task move")
 	if st := status(t, coord); !strings.Contains(st, "node n1") || !strings.Contains(st, "last seen") {
 		t.Fatalf("status does not show when the node was last heard from:\n%s", st)
 	}
@@ -223,10 +230,17 @@ func TestNodeLostMidAttemptGoesBackToReady(t *testing.T) {
 	if orphan == "" {
 		t.Fatal("the hard-killed node left no worker behind: this test no longer tests the orphan")
 	}
-	startNode(t, nodeProf)
+	_, nlog2 := startNode(t, nodeProf)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("status:\n%s\ndaemon:\n%s\nnode before:\n%s\nnode after:\n%s", status(t, coord), dlog.String(), nlog.String(), nlog2.String())
+		}
+	})
 	waitFor(t, 15*time.Second, func() bool { return sh(t, ".", find) == "" },
 		"the restarted node did not stop the orphaned worker")
-	waitFor(t, 2*time.Minute, func() bool { return strings.Contains(status(t, coord), "merged       1") },
+	// generous: under a loaded machine (the whole suite in parallel) the second attempt and
+	// its gate have taken over two minutes
+	waitFor(t, 4*time.Minute, func() bool { return strings.Contains(status(t, coord), "merged       1") },
 		"not merged after the node came back")
 	if sh(t, repo, "git rev-parse main") == before {
 		t.Fatal("main did not move")

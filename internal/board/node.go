@@ -77,7 +77,7 @@ type NodeOrders struct {
 
 // NodeCmd kinds: start (an attempt), kill (an attempt), push (the task branch, before its
 // report_done is checked), gate (a commit, with the repo's commands), cleanup (a task's
-// worktree, after merge or cancel).
+// worktree, after merge or cancel), status (a task of this node moved).
 type NodeCmd struct {
 	Kind   string `json:"kind"`
 	Task   int64  `json:"task"`
@@ -96,6 +96,10 @@ type NodeCmd struct {
 	// gate: the commit is fetched from Ref on the coordinator's copy
 	Commit string `json:"commit,omitempty"`
 	Ref    string `json:"ref,omitempty"`
+
+	// status: the task moved; the node runs its own hooks.on_status (a board, a card)
+	Status string `json:"status,omitempty"`
+	Title  string `json:"title,omitempty"`
 }
 
 // NodeReport kinds: started (pid), exited (err, tail of the log), pushed (err), gate
