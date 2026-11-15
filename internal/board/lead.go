@@ -157,10 +157,17 @@ func (s *Service) RetryTask(ctx context.Context, tok string, task int64) (any, e
 	if err != nil {
 		return nil, err
 	}
+	if n, err := s.DB.UnmergedDeps(ctx, task); err != nil || n > 0 {
+		return nil, &Error{"deps_not_merged", "a dependency of this task has not merged; retry or cancel that one first"}
+	}
 	zero := 0
 	if err := s.DB.Move(ctx, id.Actor(), task, []db.Status{db.Blocked, db.NeedsHuman}, db.Ready,
 		db.Patch{Attempts: &zero, InfraFailures: &zero}); err != nil {
 		return nil, &Error{"not_retryable", "only a blocked task or one waiting for a person can be retried"}
+	}
+	s.DB.Event(ctx, id.Actor(), task, "retried", nil) // per-retry counters (rebase conflicts) start here
+	if t, err := s.DB.GetTask(ctx, task); err == nil {
+		_ = s.DB.ReopenRun(ctx, t.RunID)
 	}
 	s.signal(task)
 	return map[string]any{"task": task, "status": "ready"}, nil
@@ -172,9 +179,11 @@ func (s *Service) CancelTask(ctx context.Context, tok string, task int64) (any, 
 	if err != nil {
 		return nil, err
 	}
-	from := []db.Status{db.Draft, db.Ready, db.Running, db.Verifying, db.Review, db.Merging, db.Blocked, db.NeedsHuman}
+	// not while merging: the fast-forward may already be under way, and a cancelled task
+	// must never land on main. It settles within a tick; cancel then, or revert the merge.
+	from := []db.Status{db.Draft, db.Ready, db.Running, db.Verifying, db.Review, db.Blocked, db.NeedsHuman}
 	if err := s.DB.Move(ctx, id.Actor(), task, from, db.Cancelled, db.Patch{ClearLease: true}); err != nil {
-		return nil, &Error{"not_cancellable", "the task is already settled (merged, cancelled, failed or split)"}
+		return nil, &Error{"not_cancellable", "the task is merging or already settled; check again in a moment"}
 	}
 	s.signal(task)
 	return map[string]any{"task": task, "status": "cancelled"}, nil

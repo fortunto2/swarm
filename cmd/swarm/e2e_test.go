@@ -348,10 +348,9 @@ func TestRestartReconcilesRunningTasks(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	time.Sleep(300 * time.Millisecond) // the attempt's pid is recorded
-	_ = first.Process.Kill()           // a crash: no shutdown, the worker is orphaned
+	orphan := attemptPid(t, prof) // polls until recorded
+	_ = first.Process.Kill()      // a crash: no shutdown, the worker is orphaned
 	_ = first.Wait()
-	orphan := attemptPid(t, prof)
 	defer exec.Command("kill", "-9", orphan).Run()
 	if !alive(orphan) {
 		t.Fatal("the orphaned worker should still be alive before the restart")
@@ -715,14 +714,7 @@ func TestCancelStopsTheWorker(t *testing.T) {
 	}
 	defer func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() }()
 	waitSocket(t, prof)
-	var pid string
-	for i := 0; i < 100; i++ {
-		out, _ := exec.Command("sqlite3", filepath.Join(prof, "state", "swarm.db"), "SELECT pid FROM attempts WHERE pid IS NOT NULL").CombinedOutput()
-		if pid = strings.TrimSpace(string(out)); pid != "" {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	pid := attemptPid(t, prof)
 	defer exec.Command("kill", "-9", pid).Run()
 	if out, err := swarm(t, prof, 10*time.Second, "task", "cancel", "1"); err != nil {
 		t.Fatalf("cancel: %v\n%s", err, out)
@@ -776,12 +768,26 @@ swarm board done "$c"
 // attemptPid: the process group swarm recorded for a task's first attempt.
 func attemptPid(t *testing.T, prof string) string {
 	t.Helper()
-	out, err := exec.Command("sqlite3", filepath.Join(prof, "state", "swarm.db"),
-		"SELECT pid FROM attempts WHERE pid IS NOT NULL ORDER BY id LIMIT 1").CombinedOutput()
-	if err != nil || strings.TrimSpace(string(out)) == "" {
-		t.Fatalf("no attempt pid recorded: %v %s", err, out)
+	needSqlite(t)
+	for i := 0; i < 100; i++ { // poll: the pid is recorded when the loop applies the start
+		out, _ := exec.Command("sqlite3", filepath.Join(prof, "state", "swarm.db"),
+			"SELECT pid FROM attempts WHERE pid IS NOT NULL ORDER BY id LIMIT 1").CombinedOutput()
+		if pid := strings.TrimSpace(string(out)); pid != "" {
+			return pid
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return strings.TrimSpace(string(out))
+	t.Fatal("no attempt pid recorded")
+	return ""
+}
+
+// needSqlite: tests that read the database through the sqlite3 CLI skip without it,
+// instead of passing vacuously.
+func needSqlite(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 CLI not installed")
+	}
 }
 
 func alive(pid string) bool { return exec.Command("kill", "-0", pid).Run() == nil }

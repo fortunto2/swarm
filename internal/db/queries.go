@@ -458,21 +458,28 @@ func (d *DB) SetAttemptPid(ctx context.Context, logPath string, pid int) error {
 	return err
 }
 
-// OpenAttemptPids: process groups of attempts that never ended, on a node.
-func (d *DB) OpenAttemptPids(ctx context.Context, node string) (map[int64]int, error) {
-	rows, err := d.QueryContext(ctx, `SELECT task_id, pid FROM attempts WHERE outcome IS NULL AND pid IS NOT NULL AND coalesce(node,'')=?`, node)
+type OpenAttempt struct {
+	Pid     int
+	Started int64
+}
+
+// OpenAttemptPids: process groups of attempts that never ended, on a node, with when they
+// started (so a reused pid is not mistaken for the worker).
+func (d *DB) OpenAttemptPids(ctx context.Context, node string) (map[int64]OpenAttempt, error) {
+	rows, err := d.QueryContext(ctx, `SELECT task_id, pid, coalesce(started_at,0) FROM attempts
+		WHERE outcome IS NULL AND pid IS NOT NULL AND coalesce(node,'')=?`, node)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[int64]int{}
+	out := map[int64]OpenAttempt{}
 	for rows.Next() {
 		var id int64
-		var pid int
-		if err := rows.Scan(&id, &pid); err != nil {
+		var o OpenAttempt
+		if err := rows.Scan(&id, &o.Pid, &o.Started); err != nil {
 			return nil, err
 		}
-		out[id] = pid
+		out[id] = o
 	}
 	return out, rows.Err()
 }
@@ -500,4 +507,33 @@ func (d *DB) NoteCount(ctx context.Context, taskID int64) (int, error) {
 	var n int
 	err := d.QueryRowContext(ctx, `SELECT count(*) FROM notes WHERE task_id=?`, taskID).Scan(&n)
 	return n, err
+}
+
+// EventCountSinceRetry: events of a type for a task since the operator last retried it.
+func (d *DB) EventCountSinceRetry(ctx context.Context, taskID int64, typ string) (int, error) {
+	var n int
+	err := d.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE task_id=?1 AND type=?2 AND id >
+		coalesce((SELECT max(id) FROM events WHERE task_id=?1 AND type='retried'), 0)`, taskID, typ).Scan(&n)
+	return n, err
+}
+
+// EventCountWith: events of a type for a task whose data mentions a value (a commit).
+func (d *DB) EventCountWith(ctx context.Context, taskID int64, typ, value string) (int, error) {
+	var n int
+	err := d.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE task_id=? AND type=? AND instr(data, ?) > 0`, taskID, typ, value).Scan(&n)
+	return n, err
+}
+
+// UnmergedDeps: dependencies of a task that have not merged.
+func (d *DB) UnmergedDeps(ctx context.Context, taskID int64) (int, error) {
+	var n int
+	err := d.QueryRowContext(ctx, `SELECT count(*) FROM deps JOIN tasks n ON n.id=deps.needs_id
+		WHERE deps.task_id=? AND n.status!='merged'`, taskID).Scan(&n)
+	return n, err
+}
+
+// ReopenRun: a run closed as done gets a task back in play.
+func (d *DB) ReopenRun(ctx context.Context, runID int64) error {
+	_, err := d.ExecContext(ctx, `UPDATE runs SET status='running' WHERE id=? AND status='done'`, runID)
+	return err
 }

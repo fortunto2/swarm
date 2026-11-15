@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -65,15 +66,16 @@ type Daemon struct {
 	Node     string
 	Log      *slog.Logger
 
-	adapters map[string]provider.Adapter
-	procs    map[int64]*proc
-	starting map[int64]starting // claimed, being prepared off the loop
-	started  chan started
-	gating   map[int64]bool
-	results  chan gateResult
-	wake     chan int64
-	bg       sync.WaitGroup // after-merge hooks: bounded by their timeout, awaited on exit
-	pruned   time.Time      // last git worktree prune
+	adapters   map[string]provider.Adapter
+	procs      map[int64]*proc
+	starting   map[int64]starting // claimed, being prepared off the loop
+	started    chan started
+	gating     map[int64]bool
+	gateCancel map[int64]context.CancelFunc
+	results    chan gateResult
+	wake       chan int64
+	bg         sync.WaitGroup // after-merge hooks: bounded by their timeout, awaited on exit
+	pruned     time.Time      // last git worktree prune
 
 	prepCtx    context.Context // parent of every prepare; cancelled at shutdown
 	prepCancel context.CancelFunc
@@ -86,16 +88,17 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 	wake := make(chan int64, 64)
 	dm := &Daemon{
 		Cfg: cfg, DB: d, SwarmBin: swarmBin, Node: "local",
-		Board:    &board.Service{DB: d, Done: wake},
-		Socket:   SocketPath(cfg.StatePath()),
-		Log:      slog.New(slog.NewJSONHandler(os.Stderr, nil)),
-		adapters: map[string]provider.Adapter{},
-		procs:    map[int64]*proc{},
-		starting: map[int64]starting{},
-		started:  make(chan started, 16),
-		gating:   map[int64]bool{},
-		results:  make(chan gateResult, 16),
-		wake:     wake,
+		Board:      &board.Service{DB: d, Done: wake},
+		Socket:     SocketPath(cfg.StatePath()),
+		Log:        slog.New(slog.NewJSONHandler(os.Stderr, nil)),
+		adapters:   map[string]provider.Adapter{},
+		procs:      map[int64]*proc{},
+		starting:   map[int64]starting{},
+		started:    make(chan started, 16),
+		gating:     map[int64]bool{},
+		gateCancel: map[int64]context.CancelFunc{},
+		results:    make(chan gateResult, 16),
+		wake:       wake,
 	}
 	for id, p := range cfg.Providers {
 		a, err := provider.New(id, p, cfg.Profile)
@@ -287,7 +290,12 @@ func (d *Daemon) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for id, pgid := range orphans {
+	for id, o := range orphans {
+		pgid := o.Pid
+		// pids are reused: kill only a group whose leader is no older than the attempt
+		if age, ok := processAge(pgid); !ok || age > time.Since(time.Unix(o.Started, 0))+time.Minute {
+			continue
+		}
 		if syscall.Kill(-pgid, 0) == nil {
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 			d.DB.Event(ctx, "swarmd", id, "orphan_killed", map[string]int{"pgid": pgid})
@@ -375,4 +383,37 @@ func (d *Daemon) waitBackground() {
 	d.closing = true
 	d.notifyMu.Unlock()
 	d.bg.Wait()
+}
+
+// processAge: how long a process has run, from ps (etime: [[dd-]hh:]mm:ss).
+func processAge(pid int) (time.Duration, bool) {
+	out, err := exec.Command("ps", "-o", "etime=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, false
+	}
+	return parseEtime(strings.TrimSpace(string(out)))
+}
+
+func parseEtime(s string) (time.Duration, bool) {
+	var days int
+	if d, rest, ok := strings.Cut(s, "-"); ok {
+		n, err := strconv.Atoi(d)
+		if err != nil {
+			return 0, false
+		}
+		days, s = n, rest
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return 0, false
+	}
+	secs := 0
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return 0, false
+		}
+		secs = secs*60 + n
+	}
+	return time.Duration(days)*24*time.Hour + time.Duration(secs)*time.Second, true
 }

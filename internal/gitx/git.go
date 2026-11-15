@@ -24,7 +24,10 @@ var hardened = []string{
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	full := append(append(append([]string{}, hardened...), "-C", dir), args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
-	cmd.Env = append(envx.Clean(), "GIT_LFS_SKIP_SMUDGE=1", "GIT_TERMINAL_PROMPT=0")
+	// LC_ALL=C: messages are parsed. The committer is swarm: the daemon commits only by
+	// rebasing, and must not depend on the operator's git identity being configured.
+	cmd.Env = append(envx.Clean(), "GIT_LFS_SKIP_SMUDGE=1", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C",
+		"GIT_COMMITTER_NAME=swarm", "GIT_COMMITTER_EMAIL=swarm@local")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {

@@ -299,12 +299,18 @@ func (d *Daemon) reap(ctx context.Context) {
 		stillRunning[t.ID] = true
 	}
 	for id, p := range d.procs { // a task cancelled under its worker: stop the worker
-		if !stillRunning[id] && !p.killed && now.Sub(p.started) > 5*time.Second {
+		if !stillRunning[id] && !p.killed {
 			if t, err := d.DB.GetTask(ctx, id); err == nil && t.Status == db.Cancelled {
 				p.killed, p.killedAt = true, now
 				killGroup(p.cmd)
 				d.Board.Revoke(p.token)
+				d.DB.EndAttempt(ctx, id, "crash") // closed now: no open attempt (and pid) left behind
 			}
+		}
+	}
+	for id, cancel := range d.gateCancel { // and its gate
+		if t, err := d.DB.GetTask(ctx, id); err == nil && t.Status == db.Cancelled {
+			cancel()
 		}
 	}
 	for _, t := range running {

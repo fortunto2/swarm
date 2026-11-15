@@ -42,10 +42,13 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		id, commit := t.ID, t.ResultCommit.String
 		grants := gate.GrantsFrom(t.Spec)
 		dir := filepath.Join(d.Cfg.StatePath(), "gates", fmt.Sprintf("T%d-%.12s", id, commit))
+		gctx, cancel := context.WithCancel(ctx)
+		d.gateCancel[id] = cancel
 		go func() {
-			v := gate.Static(ctx, r.Path, main, commit, claims, grants)
+			defer cancel()
+			v := gate.Static(gctx, r.Path, main, commit, claims, grants)
 			if v.OK {
-				v = runGate(ctx, r, dir, commit)
+				v = runGate(gctx, r, dir, commit)
 			}
 			d.results <- gateResult{taskID: id, commit: commit, v: v}
 		}()
@@ -71,6 +74,7 @@ func runGate(ctx context.Context, r config.Repo, dir, commit string) gate.Verdic
 
 func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 	delete(d.gating, r.taskID)
+	delete(d.gateCancel, r.taskID)
 	t, err := d.DB.GetTask(ctx, r.taskID)
 	if err != nil || t.Status != db.Verifying || t.ResultCommit.String != r.commit {
 		return // superseded: cancelled, or resubmitted while the gate ran
@@ -84,7 +88,12 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 	}
 	if !r.v.OK {
 		d.DB.Event(ctx, "swarmd", r.taskID, "gate_fail_detail", map[string]string{"tail": r.v.Tail})
-		d.fail(ctx, r.taskID, db.Verifying, modelFail, "gate_fail", r.v.Stage+": "+r.v.Reason+"\n"+r.v.Tail)
+		detail := r.v.Stage + ": " + r.v.Reason + "\n" + r.v.Tail
+		if n, _ := d.DB.EventCountWith(ctx, r.taskID, "rebased", r.commit); n > 0 {
+			detail = "this was your commit rebased by the daemon onto the current main; it fails there, " +
+				"so rebase your branch onto main and fix it against the new code.\n" + detail
+		}
+		d.fail(ctx, r.taskID, db.Verifying, modelFail, "gate_fail", detail)
 		return
 	}
 	// Cross-family review lands in phase 4; until then a green gate goes straight to the queue.
@@ -125,6 +134,9 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	}
 	if !gitx.IsAncestor(ctx, r.Path, main, t.ResultCommit.String) {
 		return d.rebase(ctx, t, r, main)
+	}
+	if cur, err := d.DB.GetTask(ctx, t.ID); err != nil || cur.Status != db.Merging {
+		return nil // left the queue meanwhile
 	}
 	if err := ffMain(ctx, r, t.ResultCommit.String, main); err != nil {
 		if now, herr := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch); herr == nil && now != main {
@@ -195,11 +207,13 @@ func (d *Daemon) rebase(ctx context.Context, t db.Task, r config.Repo, main stri
 	}
 	defer func() { _, _ = gitx.Run(context.WithoutCancel(ctx), r.Path, "worktree", "remove", "--force", dir) }()
 	if _, err := gitx.Run(ctx, dir, "rebase", "--quiet", main); err != nil {
+		// a conflict is what git says it is: unmerged paths, not a message to parse
+		unmerged, _ := gitx.Run(ctx, dir, "diff", "--name-only", "--diff-filter=U")
 		_, _ = gitx.Run(ctx, dir, "rebase", "--abort")
-		if !strings.Contains(err.Error(), "CONFLICT") && !strings.Contains(err.Error(), "could not apply") {
+		if strings.TrimSpace(unmerged) == "" {
 			return fmt.Errorf("rebase: %w", err) // not a conflict: blocked by the caller
 		}
-		n, err := d.DB.EventCount(ctx, t.ID, "rebase_conflict")
+		n, err := d.DB.EventCountSinceRetry(ctx, t.ID, "rebase_conflict")
 		if err != nil {
 			return err
 		}

@@ -3,6 +3,7 @@ package dispatch
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
@@ -52,5 +53,17 @@ func TestRunningSeesTheLock(t *testing.T) {
 	release()
 	if Running(dir) {
 		t.Fatal("a released lock still reads as a daemon")
+	}
+}
+
+func TestParseEtime(t *testing.T) {
+	for in, want := range map[string]time.Duration{"00:05": 5 * time.Second, "01:02:03": time.Hour + 2*time.Minute + 3*time.Second,
+		"2-00:00:10": 48*time.Hour + 10*time.Second} {
+		if got, ok := parseEtime(in); !ok || got != want {
+			t.Errorf("parseEtime(%q) = %v %v, want %v", in, got, ok, want)
+		}
+	}
+	if _, ok := parseEtime("garbage"); ok {
+		t.Error("garbage parsed")
 	}
 }
