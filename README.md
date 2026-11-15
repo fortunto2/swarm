@@ -28,6 +28,10 @@ week of quota by Wednesday. `swarm` is the dull part that makes many agents usab
 - **Profiles, not forks.** Everything that differs between your worlds (providers, repos,
   merge policy, secrets, extra tools) lives in a profile's `swarm.toml`. The core holds no
   names.
+- **One queue, several machines.** A coordinator that is always on keeps the database and
+  decides; a laptop or a box behind NAT joins with `swarm node`, dials in over ssh and runs
+  the workers of the accounts logged in there, gates included. Tasks say what they need
+  (`--runs-on vpc`); a sleeping laptop loses nothing but time. [docs/nodes.md](docs/nodes.md)
 
 ## Quick start
 
