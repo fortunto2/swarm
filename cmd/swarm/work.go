@@ -349,7 +349,7 @@ func taskOp(use, op, short string) *cobra.Command {
 
 // reportCmd: what a period of work says (PRD §11), for a person or a reflection pass.
 func reportCmd() *cobra.Command {
-	var since time.Duration
+	since := days(7 * 24 * time.Hour)
 	var asJSON bool
 	c := &cobra.Command{
 		Use:   "report",
@@ -365,7 +365,7 @@ func reportCmd() *cobra.Command {
 				return err
 			}
 			defer d.Close()
-			r, err := d.Report(context.Background(), time.Now().Add(-since).Unix())
+			r, err := d.Report(context.Background(), time.Now().Add(-time.Duration(since)).Unix())
 			if err != nil {
 				return err
 			}
@@ -375,7 +375,7 @@ func reportCmd() *cobra.Command {
 				fmt.Fprintln(out, string(b))
 				return nil
 			}
-			fmt.Fprintf(out, "last %s: %d merged, %d on the first try\n", since, r.Merged, r.FirstTry)
+			fmt.Fprintf(out, "last %s: %d merged, %d on the first try\n", since.String(), r.Merged, r.FirstTry)
 			for _, p := range r.Providers {
 				fmt.Fprintf(out, "  %-14s %3d attempts: %d done, %d gate_fail, %d timeout, %d crash, %d blocked; $%.2f\n",
 					p.Provider, p.Attempts, p.Done, p.GateFail, p.Timeout, p.Crash, p.Blocked, p.CostUSD)
@@ -392,7 +392,34 @@ func reportCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().DurationVar(&since, "since", 7*24*time.Hour, "period to report on")
+	c.Flags().Var(&since, "since", "period to report on: 7d, 24h, 90m")
 	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable")
 	return c
 }
+
+// days: a duration flag that also takes whole days ("7d"), the unit a weekly look is
+// written in; time.ParseDuration stops at hours.
+type days time.Duration
+
+func (d *days) Set(v string) error {
+	if n, ok := strings.CutSuffix(v, "d"); ok {
+		k, err := strconv.Atoi(n)
+		if err != nil || k < 0 {
+			return fmt.Errorf("%q: want a whole number of days, e.g. 7d", v)
+		}
+		*d = days(time.Duration(k) * 24 * time.Hour)
+		return nil
+	}
+	x, err := time.ParseDuration(v)
+	*d = days(x)
+	return err
+}
+
+func (d days) String() string {
+	if x := time.Duration(d); x > 0 && x%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%dd", x/(24*time.Hour))
+	}
+	return time.Duration(d).String()
+}
+
+func (d days) Type() string { return "duration" }
