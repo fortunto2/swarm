@@ -25,3 +25,13 @@ Each line: what the PRD says, what was done, why.
 - §7 tasks without file claims are not checked for overlap: declaring files is what buys the guarantee.
 - §12 flaky tests: a failed gate command is rerun once (`gate_reruns`, default 1) and named in a notification; quarantine is left to a person.
 - §10 security: two levels instead of one. `trusted` (default) runs workers without a container, as the PRD allows for supervised runs; `strict` uses Claude Code's native OS sandbox instead of Docker for the worker. The gate's own sandbox and per-task caches are not built yet (docs/hardening.md).
+
+## Nodes: one SQLite coordinator, machines dial in (2026-11-15)
+
+PRD phase 5 said "Postgres instead of SQLite when workers move to a VPS". Built instead: the
+database stays one SQLite file with one writer (the coordinator), and other machines join as
+nodes that dial in over a command's stdin/stdout (ssh in practice) and take orders through
+three board operations. Why: a shared database would give every machine a writer and undo
+the PRD's own rule that only swarmd writes; a laptop behind NAT cannot be dialled, so the
+node must call out; and ssh already authenticates the link. Cost: the coordinator is the one
+place that must be up (put it on an always-on machine). docs/nodes.md.
