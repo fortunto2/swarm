@@ -14,6 +14,7 @@ type op struct {
 	name   string
 	desc   string
 	role   string // "worker" or "lead"
+	hidden bool   // served on the socket only, never offered as an MCP tool (the node link)
 	schema *jsonschema.Schema
 	run    func(s *Service, ctx context.Context, tok string, raw json.RawMessage) (any, error)
 }
@@ -34,6 +35,8 @@ func def[In any](name, role, desc string, run func(*Service, context.Context, st
 			return run(s, ctx, tok, in)
 		}}
 }
+
+func hide(o op) op { o.hidden = true; return o }
 
 type empty struct{}
 
@@ -97,6 +100,18 @@ var ops = []op{
 		func(s *Service, ctx context.Context, tok string, in notesIn) (any, error) {
 			return s.CancelTask(ctx, tok, in.TaskID)
 		}),
+	hide(def("node_hello", "lead", "A node dials in: who it is, what it holds. Used by `swarm node`, not by sessions.",
+		func(s *Service, ctx context.Context, tok string, in NodeHello) (any, error) {
+			return s.NodeHello(ctx, tok, in)
+		})),
+	hide(def("node_poll", "lead", "A node waits for orders and reports it is alive. Used by `swarm node`.",
+		func(s *Service, ctx context.Context, tok string, in NodePoll) (any, error) {
+			return s.NodePoll(ctx, tok, in)
+		})),
+	hide(def("node_report", "lead", "A node reports what happened to an order. Used by `swarm node`.",
+		func(s *Service, ctx context.Context, tok string, in NodeReport) (any, error) {
+			return ok, s.NodeReport(ctx, tok, in)
+		})),
 	def("swarm_task_notes", "lead", "Why a task is where it is: gate failures, worker plans and questions, newest first.",
 		func(s *Service, ctx context.Context, tok string, in notesIn) (any, error) {
 			return s.TaskNotes(ctx, tok, in.TaskID)

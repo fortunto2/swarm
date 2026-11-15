@@ -69,6 +69,7 @@ type AddTaskIn struct {
 	Topic      string   `json:"topic,omitempty" jsonschema:"a harness topic id this run serves"`
 	Run        int64    `json:"run,omitempty"`
 	Priority   int      `json:"priority,omitempty"`
+	RunsOn     []string `json:"runs_on,omitempty" jsonschema:"node labels the machine must have (e.g. vpc); empty = any node"`
 }
 
 func (s *Service) AddTask(ctx context.Context, tok string, in AddTaskIn) (map[string]int64, error) {
@@ -91,6 +92,11 @@ func (s *Service) AddTask(ctx context.Context, tok string, in AddTaskIn) (map[st
 	if in.Tier != "A" && in.Tier != "B" {
 		return nil, &Error{"bad_tier", "tier is A (hard) or B (routine)"}
 	}
+	for _, l := range in.RunsOn {
+		if s.Labels == nil || !s.Labels()[l] {
+			return nil, &Error{"bad_runs_on", "no node has the label " + l + ": it would never start (labels are [nodes.<id>].labels)"}
+		}
+	}
 	run := in.Run
 	if run == 0 {
 		if s.BaseFor == nil {
@@ -105,7 +111,7 @@ func (s *Service) AddTask(ctx context.Context, tok string, in AddTaskIn) (map[st
 		}
 	}
 	tid, err := s.DB.AddTask(ctx, db.NewTask{RunID: run, Repo: in.Repo, Title: in.Title, Spec: in.Spec,
-		Acceptance: in.Acceptance, Tier: in.Tier, Priority: in.Priority, Files: in.Files, Needs: in.Needs})
+		Acceptance: in.Acceptance, Tier: in.Tier, Priority: in.Priority, Files: in.Files, Needs: in.Needs, RunsOn: in.RunsOn})
 	if err != nil {
 		return nil, &Error{"bad_task", err.Error()}
 	}
@@ -128,6 +134,7 @@ type StatusView struct {
 	SpentUS   float64        `json:"spent_usd_24h"`
 	Workers   int            `json:"attempts_running"`
 	Providers any            `json:"providers,omitempty"`
+	Nodes     any            `json:"nodes,omitempty"`
 }
 
 func (s *Service) Status(ctx context.Context, tok string) (StatusView, error) {
@@ -142,6 +149,9 @@ func (s *Service) Status(ctx context.Context, tok string) (StatusView, error) {
 	v.SpentUS, _ = s.DB.SpentSince(ctx, 86400)
 	if s.Providers != nil {
 		v.Providers, _ = s.Providers(ctx)
+	}
+	if s.Nodes != nil {
+		v.Nodes = s.Nodes.View()
 	}
 	return v, nil
 }

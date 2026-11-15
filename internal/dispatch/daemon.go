@@ -42,7 +42,9 @@ const (
 )
 
 type proc struct {
-	cmd        *exec.Cmd
+	cmd        *exec.Cmd // nil for a worker on a node
+	node       string    // "" here; else the node running it
+	worker     string
 	token      string
 	provider   string
 	done       chan error
@@ -90,6 +92,8 @@ type Daemon struct {
 	admit      admission     // the last answer of limits.admit; only the loop touches it
 	admitShown int           // what the log and events last said: 0 nothing yet, 1 admitted, 2 held
 	admitted   chan admission
+	hub        *hub           // nodes that dial in; nil when the profile has none
+	nodeEv     chan nodeEvent // their reports, applied on the loop
 }
 
 // admission: may new workers and gates start on this host now (limits.admit).
@@ -104,7 +108,7 @@ type admission struct {
 func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 	wake := make(chan int64, 64)
 	dm := &Daemon{
-		Cfg: cfg, DB: d, SwarmBin: swarmBin, Node: "local",
+		Cfg: cfg, DB: d, SwarmBin: swarmBin, Node: cfg.LocalNode(),
 		Board:      &board.Service{DB: d, Done: wake},
 		Socket:     SocketPath(cfg.StatePath()),
 		Log:        slog.New(slog.NewJSONHandler(os.Stderr, nil)),
@@ -117,8 +121,19 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 		results:    make(chan gateResult, 16),
 		wake:       wake,
 		admitted:   make(chan admission, 1),
+		nodeEv:     make(chan nodeEvent, nodeEvents),
+	}
+	remote := false
+	for _, n := range cfg.Nodes {
+		remote = remote || n.Host == "remote"
+	}
+	if remote {
+		dm.hub = newHub(dm)
 	}
 	for id, p := range cfg.Providers {
+		if cfg.Remote(cfg.NodeOf(id)) {
+			continue // its CLI and login are on that machine; the node builds the command
+		}
 		a, err := provider.New(id, p, cfg.Profile)
 		if err != nil {
 			dm.Log.Warn("provider unavailable", "provider", id, "err", err)
@@ -128,7 +143,7 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 	}
 	dm.prepCtx, dm.prepCancel = context.WithCancel(context.Background())
 	dm.redact = redact.Filter(cfg.Profile.Redact)
-	if len(dm.adapters) == 0 {
+	if len(dm.adapters) == 0 && !remote {
 		return nil, fmt.Errorf("no usable provider in profile %s", cfg.Profile.Name)
 	}
 	return dm, nil
@@ -161,6 +176,11 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	keepAwake()
 	d.Board.Repo = d.repo
 	d.Board.Providers = func(ctx context.Context) (any, error) { return ProviderViews(ctx, d.Cfg, d.DB) }
+	d.Board.Labels = d.Cfg.Labels
+	d.Board.Verify = d.verify
+	if d.hub != nil {
+		d.Board.Nodes = d.hub
+	}
 	back, err := d.DB.EnsureProviders(ctx, slices.Sorted(maps.Keys(d.Cfg.Providers)))
 	if err != nil {
 		return err
@@ -178,8 +198,11 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 		}
 		return gitx.Head(context.Background(), r.Path, r.MainRef())
 	}
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
 	go func() { errc <- board.Serve(ctx, d.Socket, d.Board) }()
+	if d.hub != nil {
+		go func() { errc <- board.ServeLink(ctx, NodeSocketPath(d.Cfg.StatePath()), d.Board) }()
+	}
 	t := time.NewTicker(tickEvery)
 	defer t.Stop()
 	for {
@@ -210,6 +233,8 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 			d.applyStart(ctx, s)
 		case a := <-d.admitted:
 			d.applyAdmit(ctx, a)
+		case ev := <-d.nodeEv:
+			d.applyNode(ctx, ev)
 		}
 	}
 }
@@ -288,6 +313,11 @@ func (d *Daemon) closeRuns(ctx context.Context) error {
 // SocketPath is short and fixed per state dir: a unix socket path is capped near 104 bytes,
 // and a profile under a long home or a macOS TMPDIR passes that easily. It lives in the
 // user's cache dir (not a world-writable /tmp), which is short on both macOS and Linux.
+// NodeSocketPath: where nodes connect (`swarm relay --node` on this host bridges to it).
+func NodeSocketPath(stateDir string) string {
+	return strings.TrimSuffix(SocketPath(stateDir), ".sock") + ".node.sock"
+}
+
 func SocketPath(stateDir string) string {
 	h := sha256.Sum256([]byte(stateDir))
 	name := hex.EncodeToString(h[:6]) + ".sock"
@@ -306,6 +336,9 @@ func (d *Daemon) repo(name string) (config.Repo, error) {
 }
 
 func (d *Daemon) locate(t db.Task) worktree.WT {
+	if t.Node.Valid && d.hub != nil && d.Cfg.Remote(t.Node.String) {
+		return worktree.For(d.hub.root(t.Node.String), t.Repo, t.ID) // on that machine
+	}
 	return worktree.For(d.Cfg.Profile.WorktreeRoot, t.Repo, t.ID)
 }
 
@@ -336,10 +369,9 @@ func (d *Daemon) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Tasks on nodes too: their workers hold tokens of the previous daemon, which this one
+	// does not know. A node still running one is told to stop it when it says hello.
 	for _, t := range running {
-		if t.Node.Valid && t.Node.String != d.Node {
-			continue
-		}
 		if d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Running}, db.Ready, db.Patch{ClearLease: true}) == nil {
 			d.DB.EndAttempt(ctx, t.ID, "crash")
 			d.DB.Event(ctx, "swarmd", t.ID, "reconciled", map[string]string{"why": "daemon restarted"})
@@ -536,4 +568,17 @@ func (d *Daemon) applyAdmit(ctx context.Context, a admission) {
 // admitting: no admit command, or its last answer was yes. Before the first answer, hold.
 func (d *Daemon) admitting() bool {
 	return d.Cfg.Limits.Admit == "" || (d.admit.checked && d.admit.ok)
+}
+
+// KillOrphan stops a worker's process group left by a process that died (a daemon or a
+// node killed hard), if the group is still the one it started: pids are reused, so only a
+// leader no older than the attempt is killed. It says whether it killed.
+func KillOrphan(pgid int, started time.Time) bool {
+	if age, ok := processAge(pgid); !ok || age > time.Since(started)+time.Minute {
+		return false
+	}
+	if syscall.Kill(-pgid, 0) != nil {
+		return false
+	}
+	return syscall.Kill(-pgid, syscall.SIGKILL) == nil
 }

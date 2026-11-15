@@ -18,7 +18,7 @@ func NewMCP(c *Client, token, role string) *mcp.Server {
 	}
 	s := mcp.NewServer(&mcp.Implementation{Name: name, Version: "0.1"}, nil)
 	for _, o := range ops {
-		if o.role != role {
+		if o.role != role || o.hidden {
 			continue
 		}
 		s.AddTool(&mcp.Tool{Name: o.name, Description: o.desc, InputSchema: o.schema},

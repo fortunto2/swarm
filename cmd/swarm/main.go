@@ -84,6 +84,9 @@ func main() {
 			if err != nil {
 				return err
 			}
+			if c.Node != nil {
+				return nodeStatus(cmd.OutOrStdout(), c)
+			}
 			if _, err := os.Stat(c.DBPath()); err != nil {
 				return fmt.Errorf("no database at %s: run `swarm init` first", c.DBPath())
 			}
@@ -108,6 +111,7 @@ func main() {
 			if !dispatch.Running(c.StatePath()) {
 				// a hold recorded by a daemon that is gone says nothing about now
 				fmt.Fprintln(out, "  daemon not running: nothing starts until `swarm daemon` runs")
+				printNodes(out, c, d)
 				return nil
 			}
 			if s := staleDaemon(c.StatePath(), revision()); s != "" {
@@ -117,6 +121,7 @@ func main() {
 				fmt.Fprintf(out, "  held since %s: %s (limits.admit; nothing new starts)\n",
 					time.Unix(since, 0).UTC().Format("01-02 15:04Z"), why)
 			}
+			printNodes(out, c, d)
 			return nil
 		},
 	})
@@ -157,7 +162,7 @@ func main() {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "%-14s %-7s %-10s %-22s %4s %7s %-9s %s\n", "PROVIDER", "KIND", "FAMILY", "ROLES", "PRIO", "SLOTS", "STATE", "TODAY")
+			fmt.Fprintf(out, "%-14s %-8s %-7s %-10s %-22s %4s %7s %-9s %s\n", "PROVIDER", "NODE", "KIND", "FAMILY", "ROLES", "PRIO", "SLOTS", "STATE", "TODAY")
 			for _, v := range views {
 				budget := "no cap"
 				if v.BudgetDay > 0 {
@@ -167,7 +172,7 @@ func main() {
 				if v.Until != "" {
 					state += " until " + v.Until
 				}
-				fmt.Fprintf(out, "%-14s %-7s %-10s %-22s %4d %3d/%-3d %-9s $%.2f %s\n", v.ID, v.Kind, v.Family,
+				fmt.Fprintf(out, "%-14s %-8s %-7s %-10s %-22s %4d %3d/%-3d %-9s $%.2f %s\n", v.ID, v.Node, v.Kind, v.Family,
 					strings.Join(v.Roles, ","), v.Priority, v.Running, v.Slots, state, v.SpentToday, budget)
 				if v.Why != "" {
 					fmt.Fprintf(out, "%-14s %s\n", "", v.Why)
@@ -177,7 +182,7 @@ func main() {
 		},
 	})
 	root.AddCommand(reportCmd())
-	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd(), selftestCmd(), versionCmd())
+	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd(), selftestCmd(), versionCmd(), nodeCmd(), relayCmd())
 
 	if err := root.Execute(); err != nil {
 		if !errors.Is(err, errReported) {

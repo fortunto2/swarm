@@ -70,6 +70,9 @@ fail the wall clock. For each:
 - `--tier`: `A` for hard work, `B` for routine. `S` is reserved for the lead.
 - `--needs`: ids of tasks that must merge first (it waits as draft). Use it instead of
   hoping two tasks run in the right order.
+- `--runs-on`: node labels the machine must have, when the work needs what only some
+  machines have (`vpc` for a private database, `gpu`). Leave it out otherwise: any machine
+  with a free account takes it, and that is what spreads the work.
 
 ```sh
 swarm task add --repo app --title "..." --spec "..." --acceptance "..." --files a.go,a_test.go
@@ -91,6 +94,9 @@ Check `swarm status` before claiming anything is done. `merged` means the gate p
 A task that stays `ready`: `swarm status` shows `held since ...` when the host's admit
 command says not now (another job runs, memory is short), and `swarm providers` shows a
 provider cooling until a reset or over its budget. Both clear by themselves; do not retry.
+With nodes, `swarm status` lists each one: a task whose `--runs-on` only an offline node
+has waits for it, and a task stays on the node of its previous attempt while that node is
+connected (its worktree is there). Machines and the link: `docs/nodes.md` in the repo.
 
 ## 4. When a task is blocked
 

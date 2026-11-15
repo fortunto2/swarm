@@ -18,19 +18,20 @@ type Task struct {
 	Provider, Model, Worker sql.NullString
 	Node, ResultCommit      sql.NullString
 	Base                    sql.NullString // the main this task's branch starts from
+	RunsOn                  sql.NullString // node labels it needs, comma-separated
 	Attempts, InfraFailures int
 	LeaseUntil, NotBefore   sql.NullInt64
 }
 
 const taskCols = `id, run_id, parent_id, repo, title, spec, acceptance, tier, status, priority,
 	provider, model, worker_id, node, result_commit, attempts, infra_failures,
-	lease_until, not_before, base_commit`
+	lease_until, not_before, base_commit, runs_on`
 
 func scanTask(r interface{ Scan(...any) error }) (Task, error) {
 	var t Task
 	err := r.Scan(&t.ID, &t.RunID, &t.ParentID, &t.Repo, &t.Title, &t.Spec, &t.Acceptance, &t.Tier,
 		&t.Status, &t.Priority, &t.Provider, &t.Model, &t.Worker, &t.Node,
-		&t.ResultCommit, &t.Attempts, &t.InfraFailures, &t.LeaseUntil, &t.NotBefore, &t.Base)
+		&t.ResultCommit, &t.Attempts, &t.InfraFailures, &t.LeaseUntil, &t.NotBefore, &t.Base, &t.RunsOn)
 	return t, err
 }
 
@@ -78,6 +79,7 @@ type NewTask struct {
 	Priority                      int
 	Files                         []string // write claims
 	Needs                         []int64  // tasks that must merge first; the task starts as draft
+	RunsOn                        []string // node labels the machine must have (vpc, gpu)
 }
 
 func (d *DB) AddTask(ctx context.Context, n NewTask) (int64, error) {
@@ -91,8 +93,8 @@ func (d *DB) AddTask(ctx context.Context, n NewTask) (int64, error) {
 		status = Draft
 	}
 	r, err := tx.ExecContext(ctx, `INSERT INTO tasks(run_id, parent_id, repo, title, spec, acceptance, tier,
-		priority, status, created_at, updated_at) VALUES(?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())`,
-		n.RunID, n.ParentID, n.Repo, n.Title, n.Spec, n.Acceptance, n.Tier, n.Priority, string(status))
+		priority, status, runs_on, created_at, updated_at) VALUES(?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), unixepoch(), unixepoch())`,
+		n.RunID, n.ParentID, n.Repo, n.Title, n.Spec, n.Acceptance, n.Tier, n.Priority, string(status), strings.Join(n.RunsOn, ","))
 	if err != nil {
 		return 0, err
 	}
@@ -657,4 +659,49 @@ func (d *DB) Held(ctx context.Context) (why string, since int64, ok bool) {
 	}
 	_ = json.Unmarshal([]byte(data), &v)
 	return v.Why, since, true
+}
+
+// Labels: a task's runs_on as a list.
+func (t Task) Labels() []string {
+	if !t.RunsOn.Valid || t.RunsOn.String == "" {
+		return nil
+	}
+	return strings.Split(t.RunsOn.String, ",")
+}
+
+// NodeSeen records a node that dialed in, with what status should show about it.
+func (d *DB) NodeSeen(ctx context.Context, name string, info any) error {
+	b, err := json.Marshal(info)
+	if err != nil {
+		return err
+	}
+	_, err = d.ExecContext(ctx, `INSERT INTO nodes(name, seen_at, info) VALUES(?, unixepoch(), ?)
+		ON CONFLICT(name) DO UPDATE SET seen_at=excluded.seen_at, info=excluded.info`, name, string(b))
+	return err
+}
+
+// NodeRow: a node as last seen.
+type NodeRow struct {
+	Name   string
+	SeenAt int64
+	Info   json.RawMessage
+}
+
+func (d *DB) Nodes(ctx context.Context) ([]NodeRow, error) {
+	rows, err := d.QueryContext(ctx, `SELECT name, seen_at, info FROM nodes ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NodeRow
+	for rows.Next() {
+		var n NodeRow
+		var info string
+		if err := rows.Scan(&n.Name, &n.SeenAt, &info); err != nil {
+			return nil, err
+		}
+		n.Info = json.RawMessage(info)
+		out = append(out, n)
+	}
+	return out, rows.Err()
 }

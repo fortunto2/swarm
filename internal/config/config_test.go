@@ -158,11 +158,10 @@ command = "index"
 tools = ["search"]
 
 [nodes.other]
-host = "ssh:box"
+host = "remote"
 accounts = ["mock-b"]
 
 [nodes.laptop]`, 1)
-	src = strings.Replace(src, `accounts = ["claude-a"]`, `accounts = ["claude-a", "mock-b"]`, 1)
 	src = strings.Replace(src, `worktree_root = "/tmp/swarm-wt"`, "worktree_root = \"/tmp/swarm-wt\"\nsafety = \"strict\"\nnotify = \"say\"\nsecret_cmd = [\"keys\", \"get\"]", 1)
 	c, err := Load(write(t, src))
 	if err != nil {

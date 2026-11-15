@@ -70,10 +70,18 @@ priority = 1          # cheapest first for routine work
 budget_usd_day = 20
 
 [nodes.laptop]
-host = "local"
+host = "local"        # the machine this daemon runs on
 max_workers = 6
 accounts = ["claude-a", "codex", "kimi"]
 roles = ["supervisor", "tree"]
+
+# A machine that dials in (`swarm node` there, with its own small profile: docs/nodes.md).
+# Its accounts run there; labels are what a task's runs_on can ask for.
+# [nodes.gpu-box]
+# host = "remote"
+# accounts = ["claude-b"]
+# labels = ["gpu"]
+# max_workers = 2
 
 # Extra read-only MCP servers next to the board. A code + session index pays for itself:
 # a worker finds where a name is defined across repos, and what an earlier attempt or a

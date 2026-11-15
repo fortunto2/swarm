@@ -40,6 +40,17 @@ func (x *RPC) Do(r Req, out *Reply) error {
 
 // Serve listens on the socket until ctx ends. The socket is 0600: same user only.
 func Serve(ctx context.Context, sock string, s *Service) error {
+	return serve(ctx, sock, s, maxConnBytes)
+}
+
+// ServeLink serves the node link: the same operations, for connections that live as long
+// as a node stays connected, so the per-connection byte budget of an attempt does not
+// apply. Every call still carries the operator's token.
+func ServeLink(ctx context.Context, sock string, s *Service) error {
+	return serve(ctx, sock, s, 0)
+}
+
+func serve(ctx context.Context, sock string, s *Service, budget int64) error {
 	_ = os.Remove(sock)
 	l, err := net.Listen("unix", sock)
 	if err != nil {
@@ -68,7 +79,11 @@ func Serve(ctx context.Context, sock string, s *Service) error {
 		}
 		go func() {
 			defer func() { <-slots }()
-			srv.ServeCodec(jsonrpc.NewServerCodec(&capped{Conn: c, left: maxConnBytes}))
+			var conn io.ReadWriteCloser = c
+			if budget > 0 {
+				conn = &capped{Conn: c, left: budget}
+			}
+			srv.ServeCodec(jsonrpc.NewServerCodec(conn))
 		}()
 	}
 }

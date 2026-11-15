@@ -14,7 +14,8 @@ Setting it up for yourself: [`docs/setup.md`](docs/setup.md). Using it from a se
 | `internal/config` | `swarm.toml` load, validation (every problem at once), JSON Schema (`make schema`) |
 | `internal/db` | SQLite, the only writer. `state.go` is the task state machine: every status change goes through `Move`, guarded by the expected status. Migrations are append-only |
 | `internal/dispatch` | the daemon loop: reap, promote, schedule, gate, merge; provider registry; hooks; reconcile after a restart |
-| `internal/board` | the one door for agents: an op table (role, input type, handler) served over a unix socket and as MCP |
+| `internal/board` | the one door for agents: an op table (role, input type, handler) served over a unix socket and as MCP; `node.go` is the node link's protocol |
+| `internal/node` | `swarm node`: a machine that dials the coordinator, runs its workers and gates there, forwards their board calls ([docs/nodes.md](docs/nodes.md)) |
 | `internal/gate` | static checks (claims, tests deleted/skipped/shrunk, protected paths) and the repo's gate commands |
 | `internal/provider` | turns an attempt into a `claude` process: allowed tools, deny rules, OS sandbox (strict), env, MCP config |
 | `internal/shellx` | every profile shell command (gate, hooks, notify, admit): own process group, killed whole on timeout |

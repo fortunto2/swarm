@@ -33,7 +33,7 @@ func TestEligibleOrderRolesAndState(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("eligible(B) = %v, want %v", got, want)
 	}
-	if id, ok := d.pickProvider("B", map[string]int{"also-1": 1}); !ok || id != "cheap" {
+	if id, ok := d.pickProvider("B", map[string]int{"also-1": 1}, nil); !ok || id != "cheap" {
 		t.Fatalf("a full provider is skipped for the next best: got %q", id)
 	}
 	if got := d.eligible("A"); got[0] != "a-only" {

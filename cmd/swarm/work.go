@@ -30,7 +30,7 @@ import (
 
 func taskCmd() *cobra.Command {
 	var repo, title, spec, acceptance, tier, topic string
-	var files []string
+	var files, runsOn []string
 	var needs []int64
 	var priority int
 	var run int64
@@ -54,7 +54,12 @@ func taskCmd() *cobra.Command {
 				spec = string(b)
 			}
 			in := board.AddTaskIn{Repo: repo, Title: title, Spec: spec, Acceptance: acceptance, Tier: tier,
-				Files: files, Needs: needs, Run: run, Priority: priority, Topic: topic}
+				Files: files, Needs: needs, Run: run, Priority: priority, Topic: topic, RunsOn: runsOn}
+			for _, l := range runsOn {
+				if !c.Labels()[l] {
+					return fmt.Errorf("--runs-on %s: no node has that label ([nodes.<id>].labels)", l)
+				}
+			}
 			ctx := context.Background()
 			// One writer: while the daemon runs, the task goes in through it.
 			run, id, viaDaemon, err := addViaDaemon(c, in)
@@ -80,7 +85,7 @@ func taskCmd() *cobra.Command {
 					}
 				}
 				if id, err = d.AddTask(ctx, db.NewTask{RunID: run, Repo: repo, Title: title, Spec: spec,
-					Acceptance: acceptance, Tier: tier, Priority: priority, Files: files, Needs: needs}); err != nil {
+					Acceptance: acceptance, Tier: tier, Priority: priority, Files: files, Needs: needs, RunsOn: runsOn}); err != nil {
 					return err
 				}
 			}
@@ -103,6 +108,7 @@ func taskCmd() *cobra.Command {
 	f.IntVar(&priority, "priority", 0, "higher first")
 	f.Int64SliceVar(&needs, "needs", nil, "task ids that must merge first; the task waits as draft")
 	f.Int64Var(&run, "run", 0, "add to an existing run")
+	f.StringSliceVar(&runsOn, "runs-on", nil, "node labels the machine must have (e.g. vpc)")
 	for _, n := range []string{"repo", "title", "spec", "acceptance"} {
 		_ = add.MarkFlagRequired(n)
 	}

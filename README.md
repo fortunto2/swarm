@@ -122,9 +122,9 @@ same static checks and gate commands the daemon will run.
 | Section | What |
 |---|---|
 | `[profile]` | name, `worktree_root` (must be outside every repo), `state_dir`, `notify`, `secret_cmd` |
-| `[repos.<name>]` | path, `gate` commands, `merge = "ff"` (or `"pr"`, coming) |
+| `[repos.<name>]` | path, `gate` commands, `merge = "ff"` or `"branch"`, `gate_on = "node"` to gate where the work was done |
 | `[providers.<id>]` | `kind` (claude, codex, mock), `family` (review crosses families), slots, tiers, models, env |
-| `[nodes.<id>]` | where workers run: `local` or `ssh:<alias>` (multi-node is on the roadmap) |
+| `[nodes.<id>]` | machines: `host = "local"` (the daemon's) or `"remote"` (dials in with `swarm node`), their accounts, labels, max workers. [docs/nodes.md](docs/nodes.md) |
 | `[mcp.<name>]` | extra read-only MCP servers for workers and the lead |
 | `[hooks]` | `after_merge` commands, e.g. reindex the repo |
 
@@ -150,6 +150,8 @@ claude-a       claude  anthropic  lead,worker,reviewer      3   0/3   cooling un
 
 Workers are not a registry of their own: a worker lives one attempt, a row in `attempts`.
 Machines are `[nodes.<id>]`: which accounts are logged in there and how many workers fit.
+A remote node (a laptop, a box behind NAT) runs `swarm node` and dials the coordinator over
+ssh; one database and one MCP serve every machine. See [docs/nodes.md](docs/nodes.md).
 
 Secrets are never values in the file: a token-looking key must hold `secret:<name>`
 (resolved by `secret_cmd`) or `env:<VAR>`, and `swarm check` refuses anything else.

@@ -100,6 +100,40 @@
               "null",
               "integer"
             ]
+          },
+          "gate_on": {
+            "type": "string"
+          },
+          "remote": {
+            "type": "string"
+          },
+          "publish": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "fetch": {
+            "type": "string"
+          },
+          "land": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -121,6 +155,11 @@
         },
         "max_gates": {
           "type": "integer"
+        },
+        "node_timeout": {
+          "type": "string",
+          "description": "a Go duration: 90s, 15m, 1h30m",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
         },
         "admit": {
           "type": "string"
@@ -243,10 +282,44 @@
             "items": {
               "type": "string"
             }
+          },
+          "labels": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false
       }
+    },
+    "node": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "coordinator": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "coordinator"
+      ],
+      "additionalProperties": false
     },
     "mcp": {
       "type": "object",

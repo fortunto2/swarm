@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
@@ -18,9 +19,6 @@ import (
 // startGates launches the gate for every verifying task not already being checked. Gates
 // run off the tick so a 15-minute suite does not freeze scheduling.
 func (d *Daemon) startGates(ctx context.Context) error {
-	if !d.admitting() {
-		return nil // a gate is the heaviest thing swarm runs; it waits for the host too
-	}
 	ts, err := d.DB.TasksIn(ctx, db.Verifying)
 	if err != nil {
 		return err
@@ -36,6 +34,16 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// gate_on = "node": the node that made the commit runs the suite, while it is there
+		node := ""
+		if r.GateOn == "node" {
+			if n := d.onNode(t); n != "" && d.present(n) {
+				node = n
+			}
+		}
+		if node == "" && !d.admitting() {
+			continue // a gate is the heaviest thing swarm runs; here it waits for the host too
+		}
 		main, err := gitx.Head(ctx, r.Path, r.MainRef())
 		if err != nil {
 			return err
@@ -48,15 +56,29 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		dir := filepath.Join(d.Cfg.StatePath(), "gates", fmt.Sprintf("T%d-%.12s", id, commit))
 		gctx, cancel := context.WithCancel(ctx)
 		d.gateCancel[id] = cancel
+		task := t
 		go func() {
 			defer cancel()
 			v := gate.Static(gctx, r.Path, main, commit, claims, grants)
 			if v.OK {
-				v = runGate(gctx, r, dir, commit)
+				ran := false
+				if node != "" { // the node went away or never answered: the gate runs here
+					var nv gate.Verdict
+					if nv, ran = d.hub.gateOn(gctx, node, task, commit, r.GateTimeout.Duration+5*time.Minute); ran {
+						v = nv
+					}
+				}
+				if !ran {
+					v = runGate(gctx, r, dir, commit)
+				}
 			}
 			d.results <- gateResult{taskID: id, commit: commit, v: v}
 		}()
-		d.DB.Event(ctx, "swarmd", t.ID, "gate_started", map[string]string{"commit": commit})
+		where := d.Node
+		if node != "" {
+			where = node
+		}
+		d.DB.Event(ctx, "swarmd", t.ID, "gate_started", map[string]string{"commit": commit, "node": where})
 	}
 	return nil
 }
@@ -169,9 +191,10 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	}
 	d.DB.Event(ctx, "swarmd", t.ID, "merged", map[string]string{"commit": t.ResultCommit.String})
 	d.Log.Info("merged", "task", t.ID, "commit", t.ResultCommit.String)
-	if err := worktree.Remove(ctx, r.Path, wt); err != nil {
+	if err := worktree.Remove(ctx, r.Path, wt); err != nil && d.onNode(t) == "" {
 		d.Log.Warn("worktree cleanup", "task", t.ID, "err", err)
 	}
+	d.cleanupRemote(ctx, t, r)
 	d.bg.Add(1)
 	go func() {
 		defer d.bg.Done()

@@ -53,6 +53,13 @@ type Service struct {
 	Notify func(msg string)
 	// Providers gives the provider registry view (declared + live).
 	Providers func(ctx context.Context) (any, error)
+	// Verify makes a reported commit checkable and says where: a local task's worktree, or,
+	// for a task on a node, the repo here once the node has pushed its branch. nil = Locate.
+	Verify func(ctx context.Context, t db.Task) (string, error)
+	// Nodes is the daemon's side of the node link; nil when it takes no nodes.
+	Nodes NodeHub
+	// Labels: node labels a task's runs_on may name.
+	Labels func() map[string]bool
 
 	mu     sync.Mutex
 	tokens map[string]Identity
@@ -173,6 +180,11 @@ func (s *Service) ReportDone(ctx context.Context, tok, commit, summary string) e
 	}
 	loc := s.Locate(t)
 	wt := loc.Path
+	if s.Verify != nil {
+		if wt, err = s.Verify(ctx, t); err != nil {
+			return &Error{"no_commit", "your branch could not be fetched for the gate: " + err.Error()}
+		}
+	}
 	sha, err := gitx.Head(ctx, wt, commit)
 	if err != nil {
 		return &Error{"no_commit", "commit " + commit + " does not exist in your worktree"}

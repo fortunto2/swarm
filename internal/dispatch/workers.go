@@ -56,7 +56,7 @@ func (d *Daemon) maxWorkers() int {
 }
 
 func (d *Daemon) schedule(ctx context.Context) error {
-	if !d.admitting() {
+	if !d.admitting() && d.hub == nil {
 		return nil // the host said not now (limits.admit); asked again within 15 s
 	}
 	ready, err := d.DB.TasksIn(ctx, db.Ready)
@@ -71,17 +71,17 @@ func (d *Daemon) schedule(ctx context.Context) error {
 		return err
 	}
 	busy := map[string]int{}
+	perNode := map[string]int{} // workers alive or starting on each machine
 	for _, p := range d.procs {
 		busy[p.provider]++
+		perNode[d.Cfg.NodeOf(p.provider)]++
 	}
 	for _, st := range d.starting {
 		busy[st.provider]++
+		perNode[d.Cfg.NodeOf(st.provider)]++
 	}
 	now := time.Now().Unix()
 	for _, t := range ready {
-		if len(d.procs)+len(d.starting) >= d.maxWorkers() {
-			return nil
-		}
 		if t.NotBefore.Valid && t.NotBefore.Int64 > now {
 			continue
 		}
@@ -95,10 +95,11 @@ func (d *Daemon) schedule(ctx context.Context) error {
 		if blocker := overlapping(claims, inFlight); blocker != 0 {
 			continue // waits for T<blocker> to merge or fail: same files, PRD §7
 		}
-		pid, ok := d.pickProvider(t.Tier, busy)
+		pid, ok := d.pickProvider(t.Tier, busy, func(id string) bool { return d.fits(t, id, perNode) })
 		if !ok {
 			continue
 		}
+		node := d.Cfg.NodeOf(pid)
 		p := d.Cfg.Providers[pid]
 		model := p.Models[t.Tier]
 		n, err := d.DB.AttemptCount(ctx, t.ID)
@@ -106,13 +107,14 @@ func (d *Daemon) schedule(ctx context.Context) error {
 			return err
 		}
 		worker := fmt.Sprintf("%s-T%d-%d", pid, t.ID, n+1) // unique per attempt: its own log, its own usage row
-		if err := d.DB.Claim(ctx, t.ID, pid, model, worker, d.Node, lease); err != nil {
+		if err := d.DB.Claim(ctx, t.ID, pid, model, worker, node, lease); err != nil {
 			if errors.Is(err, db.ErrTaken) {
 				continue
 			}
 			return err
 		}
 		busy[pid]++
+		perNode[node]++
 		inFlight[t.ID] = claims
 		slot := d.freeSlot()
 		d.starting[t.ID] = starting{provider: pid, slot: slot}
@@ -125,6 +127,10 @@ func (d *Daemon) schedule(ctx context.Context) error {
 					d.started <- started{taskID: t.ID, err: fmt.Errorf("prepare panicked: %v", r)}
 				}
 			}()
+			if d.Cfg.Remote(node) {
+				d.started <- d.prepareRemote(pctx, t, node, pid, model, worker, slot)
+				return
+			}
 			d.started <- d.prepare(pctx, t, adapter, pid, model, worker, slot)
 		}()
 	}
@@ -194,7 +200,7 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapte
 		return fail(err)
 	}
 	now := time.Now()
-	return started{taskID: t.ID, model: model, p: &proc{cmd: cmd, token: tok, provider: pid, slot: slot, done: done, log: logPath, started: now,
+	return started{taskID: t.ID, model: model, p: &proc{cmd: cmd, worker: worker, token: tok, provider: pid, slot: slot, done: done, log: logPath, started: now,
 		leaseUntil: now.Add(lease), deadline: now.Add(d.Cfg.Limits.TaskWallClock.Duration)}}
 }
 
@@ -209,30 +215,38 @@ func (d *Daemon) applyStart(ctx context.Context, s started) {
 	t, err := d.DB.GetTask(ctx, s.taskID)
 	if err != nil || t.Status != db.Running {
 		// the task left running while it was prepared (cancelled, reported): no worker for it
-		killGroup(s.p.cmd)
-		d.Board.Revoke(s.p.token)
-		go func() { <-s.p.done }()
+		d.drop(s.p)
 		return
 	}
-	if _, err := d.DB.StartAttempt(ctx, s.taskID, pid, s.model, d.Node, s.p.log); err != nil {
-		killGroup(s.p.cmd)
-		d.Board.Revoke(s.p.token)
-		go func() { <-s.p.done }()
+	node := d.Node
+	if s.p.node != "" {
+		node = s.p.node
+	}
+	if _, err := d.DB.StartAttempt(ctx, s.taskID, pid, s.model, node, s.p.log); err != nil {
+		d.drop(s.p)
 		d.fail(ctx, s.taskID, db.Running, infraFail, "crash", "could not record the attempt: "+err.Error())
 		return
 	}
-	_ = d.DB.SetAttemptPid(ctx, s.p.log, s.p.cmd.Process.Pid)
+	if s.p.cmd != nil {
+		_ = d.DB.SetAttemptPid(ctx, s.p.log, s.p.cmd.Process.Pid)
+	}
 	d.procs[s.taskID] = s.p
 	if len(d.Cfg.Hooks.OnStatus) > 0 {
 		d.statusHook(s.taskID, db.Running) // now the worktree exists for a board to label
 	}
-	d.DB.Event(ctx, "swarmd", s.taskID, "started", map[string]string{"provider": pid, "log": s.p.log, "node": d.Node})
+	d.DB.Event(ctx, "swarmd", s.taskID, "started", map[string]string{"provider": pid, "log": s.p.log, "node": node})
 	d.Log.Info("worker started", "task", s.taskID, "provider", pid)
 }
 
 // launch: own process group (stop = signal the group, no orphans), output streamed to a
 // file and never held in memory, commits signed with the worker's identity.
 func (d *Daemon) launch(cmd *exec.Cmd, logPath, worker string) (chan error, error) {
+	return Launch(cmd, logPath, worker)
+}
+
+// Launch starts a worker the way the daemon does, here or on a node: its own process
+// group, output to a file, commits signed with the worker's name. done gets its exit.
+func Launch(cmd *exec.Cmd, logPath, worker string) (chan error, error) {
 	f, err := os.Create(logPath)
 	if err != nil {
 		return nil, err
@@ -289,16 +303,32 @@ func (d *Daemon) reap(ctx context.Context) {
 		default:
 		}
 		if p.killed && now.After(p.killedAt.Add(10*time.Second)) {
-			_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL) // done has not fired: still ours
+			if p.cmd != nil {
+				_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL) // done has not fired: still ours
+			} else if now.After(p.killedAt.Add(d.Cfg.Limits.NodeTimeout.Duration)) {
+				select { // a node that never confirmed the kill: the attempt ends here anyway
+				case p.done <- errNodeLost:
+				default:
+				}
+			}
 			continue
 		}
 		if now.After(p.deadline) && !p.killed {
 			// Killed, but kept until it is gone: re-queuing now would let a dying process
 			// and a new attempt write the same worktree. finish() counts the timeout.
 			p.killed, p.killedAt = true, now
-			killGroup(p.cmd)
+			d.stop(p)
 			d.Board.Revoke(p.token)
 			continue
+		}
+		if p.node != "" && !d.present(p.node) {
+			if d.hub.away(p.node) > 2*d.Cfg.Limits.NodeTimeout.Duration { // gone too long: the attempt is lost
+				select {
+				case p.done <- errNodeLost:
+				default:
+				}
+			}
+			continue // no renewal while the node is away
 		}
 		if now.After(p.leaseUntil.Add(-lease / 2)) { // renew at half-life, not every tick
 			p.leaseUntil = now.Add(lease)
@@ -317,7 +347,7 @@ func (d *Daemon) reap(ctx context.Context) {
 		if !stillRunning[id] && !p.killed {
 			if t, err := d.DB.GetTask(ctx, id); err == nil && t.Status == db.Cancelled {
 				p.killed, p.killedAt = true, now
-				killGroup(p.cmd)
+				d.stop(p)
 				d.Board.Revoke(p.token)
 				d.DB.EndAttempt(ctx, id, "crash") // closed now: no open attempt (and pid) left behind
 			}
@@ -340,6 +370,9 @@ func (d *Daemon) reap(ctx context.Context) {
 func (d *Daemon) release(id int64, p *proc) {
 	d.Board.Revoke(p.token)
 	delete(d.procs, id)
+	if p.node != "" {
+		d.hub.forget(p.worker)
+	}
 	// the MCP config holds resolved secrets of extra servers: gone with the attempt
 	_ = os.Remove(filepath.Join(filepath.Dir(p.log), "mcp.json"))
 }
@@ -484,6 +517,17 @@ func (d *Daemon) fail(ctx context.Context, id int64, from db.Status, kind failKi
 	d.Log.Warn(event, "task", id, "outcome", outcome, "status", to)
 }
 
+// drop: a worker started for a task that no longer wants it.
+func (d *Daemon) drop(p *proc) {
+	d.stop(p)
+	d.Board.Revoke(p.token)
+	if p.node != "" {
+		d.hub.forget(p.worker)
+		return
+	}
+	go func() { <-p.done }()
+}
+
 // killGroup sends SIGTERM to the worker's process group. SIGKILL follows from reap (or
 // shutdown) only while the process is still known to be alive: a timer fired later could
 // hit a recycled process group.
@@ -512,10 +556,14 @@ func (d *Daemon) shutdown() {
 		}
 	}
 	for _, p := range d.procs {
-		killGroup(p.cmd)
+		d.stop(p)
 	}
 	grace := time.After(10 * time.Second)
 	for id, p := range d.procs {
+		if p.cmd == nil {
+			delete(d.procs, id) // on a node: told to stop; its next hello is answered with a kill
+			continue
+		}
 		select {
 		case <-p.done:
 		case <-grace:
@@ -573,3 +621,9 @@ func untouched(ctx context.Context, wt, main string) (bool, error) {
 	dirty, err := gitx.Run(ctx, wt, "status", "--porcelain")
 	return err == nil && dirty == "", err
 }
+
+// Untouched: a worktree with no commit over main and no edits; a retry may reset it.
+func Untouched(ctx context.Context, wt, main string) (bool, error) { return untouched(ctx, wt, main) }
+
+// FileTail: the last n bytes of a file (a worker's log).
+func FileTail(path string, n int64) string { return fileTail(path, n) }

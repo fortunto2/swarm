@@ -58,7 +58,23 @@ type Repo struct {
 	// merge = "branch": the gated commit (rebased on main) is published as BranchPrefix+"T<id>"
 	// for a person or a review process to merge; main is never touched. Default "swarm/done/".
 	BranchPrefix string `toml:"branch_prefix" json:"branch_prefix,omitempty"`
-	GateReruns   *int   `toml:"gate_reruns" json:"gate_reruns,omitempty"` // reruns of a failed gate command (flaky tests); default 1 // "ff": ff-only into main; "pr": leave a branch for a human PR
+	GateReruns   *int   `toml:"gate_reruns" json:"gate_reruns,omitempty"`
+	// GateOn: where the gate commands run. "" or "coordinator": here, in a throwaway
+	// worktree; "node": on the node whose worker made the commit, while it is online (its
+	// machine may be the one with the cores, the toolchain or the data the suite needs).
+	GateOn string `toml:"gate_on" json:"gate_on,omitempty"`
+
+	// Node profiles only: how this node keeps its copy in step with the coordinator's.
+	Remote  string    `toml:"remote" json:"remote,omitempty"`   // git URL of the coordinator's copy, as this node reaches it
+	Publish []RefSync `toml:"publish" json:"publish,omitempty"` // refs pushed to the coordinator's copy when they move (e.g. its main)
+	Fetch   string    `toml:"fetch" json:"fetch,omitempty"`     // a remote fetched every few minutes before publishing (e.g. origin)
+	Land    string    `toml:"land" json:"land,omitempty"`       // "ff": fast-forward this node's main to the coordinator's after a merge // reruns of a failed gate command (flaky tests); default 1 // "ff": ff-only into main; "pr": leave a branch for a human PR
+}
+
+// RefSync: one ref a node pushes to the coordinator's copy of a repo.
+type RefSync struct {
+	From string `toml:"from" json:"from"` // a ref here, e.g. refs/remotes/origin/main
+	To   string `toml:"to" json:"to"`     // the ref there, e.g. refs/remotes/laptop/main
 }
 
 type Limits struct {
@@ -66,6 +82,9 @@ type Limits struct {
 	TaskWallClock Duration `toml:"task_wall_clock" json:"task_wall_clock,omitempty"`
 	MaxAttempts   int      `toml:"max_attempts" json:"max_attempts,omitempty"`
 	MaxGates      int      `toml:"max_gates" json:"max_gates,omitempty"` // gates running at once; default half of max_workers
+	// NodeTimeout: a remote node not heard from for this long is offline (no new work);
+	// for twice as long, its running attempts count as lost and go back to ready. 90s.
+	NodeTimeout Duration `toml:"node_timeout" json:"node_timeout,omitempty"`
 	// Admit: a shell command asked, off the loop and at most every 15 s, before new workers
 	// or gates start. Exit 0 admits; anything else holds them, and the first output line is
 	// the reason. For a host shared with other work: hold while it runs, or while memory is low.
@@ -103,11 +122,24 @@ type Provider struct {
 	AllowedTools []string `toml:"allowed_tools" json:"allowed_tools,omitempty"`
 }
 
+// Node: a machine workers run on. "local" is the one the daemon runs on; "remote" is one
+// that dials in with `swarm node` (a laptop, a box behind NAT, a VPS) and runs the workers
+// of its accounts there. Accounts: the providers logged in on that machine. Labels: what a
+// task's runs_on can ask for (vpc, gpu, mac).
 type Node struct {
-	Host       string   `toml:"host" json:"host,omitempty"` // "local" or "ssh:<alias>"
+	Host       string   `toml:"host" json:"host,omitempty"` // "local" or "remote"
 	MaxWorkers int      `toml:"max_workers" json:"max_workers,omitempty"`
 	Accounts   []string `toml:"accounts" json:"accounts,omitempty"`
 	Roles      []string `toml:"roles" json:"roles,omitempty"`
+	Labels     []string `toml:"labels" json:"labels,omitempty"`
+}
+
+// NodeSelf: in a node profile, who this node is and how it reaches the coordinator. The
+// command runs swarm on the coordinator's host with the coordinator's profile; its stdin
+// and stdout become the link (ssh is the usual transport, and also the authentication).
+type NodeSelf struct {
+	Name        string   `toml:"name" json:"name"`
+	Coordinator []string `toml:"coordinator" json:"coordinator"`
 }
 
 // MCPServer: an extra read-only server given to agents next to the board, e.g. a code
@@ -153,15 +185,18 @@ func (s Sandbox) On(strict bool) bool {
 }
 
 type Config struct {
-	Dir       string               `toml:"-" json:"-"` // the profile directory this file was read from
-	Profile   Profile              `toml:"profile" json:"profile,omitempty"`
-	Repos     map[string]Repo      `toml:"repos" json:"repos,omitempty"`
-	Limits    Limits               `toml:"limits" json:"limits,omitempty"`
-	Providers map[string]Provider  `toml:"providers" json:"providers,omitempty"`
-	Nodes     map[string]Node      `toml:"nodes" json:"nodes,omitempty"`
-	MCP       map[string]MCPServer `toml:"mcp" json:"mcp,omitempty"`
-	Hooks     Hooks                `toml:"hooks" json:"hooks,omitempty"`
-	Sandbox   Sandbox              `toml:"sandbox" json:"sandbox,omitempty"`
+	Dir       string              `toml:"-" json:"-"` // the profile directory this file was read from
+	Profile   Profile             `toml:"profile" json:"profile,omitempty"`
+	Repos     map[string]Repo     `toml:"repos" json:"repos,omitempty"`
+	Limits    Limits              `toml:"limits" json:"limits,omitempty"`
+	Providers map[string]Provider `toml:"providers" json:"providers,omitempty"`
+	Nodes     map[string]Node     `toml:"nodes" json:"nodes,omitempty"`
+	Node      *NodeSelf           `toml:"node" json:"node,omitempty"` // set in a node profile only
+
+	raw     map[string]Provider  // providers as written: a remote node expands ~ and resolves secrets itself
+	MCP     map[string]MCPServer `toml:"mcp" json:"mcp,omitempty"`
+	Hooks   Hooks                `toml:"hooks" json:"hooks,omitempty"`
+	Sandbox Sandbox              `toml:"sandbox" json:"sandbox,omitempty"`
 }
 
 var (
@@ -210,6 +245,7 @@ func Load(profileDir string) (*Config, error) {
 	}
 	c.Dir = profileDir
 	c.defaults()
+	c.raw = maps.Clone(c.Providers)
 	c.resolvePaths()
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -232,6 +268,9 @@ func (c *Config) defaults() {
 	}
 	if c.Limits.MaxGates == 0 {
 		c.Limits.MaxGates = max(1, c.Limits.MaxWorkers/2)
+	}
+	if c.Limits.NodeTimeout.Duration == 0 {
+		c.Limits.NodeTimeout.Duration = 90 * time.Second
 	}
 	if c.Hooks.Timeout.Duration == 0 {
 		c.Hooks.Timeout.Duration = 2 * time.Minute
@@ -257,6 +296,9 @@ func (c *Config) defaults() {
 // Validate returns every problem at once: fixing a config one error per run is how
 // people stop reading the errors.
 func (c *Config) Validate() error {
+	if c.Node != nil {
+		return c.validateNode()
+	}
 	var errs []error
 	bad := func(f string, a ...any) { errs = append(errs, fmt.Errorf(f, a...)) }
 
@@ -285,6 +327,12 @@ func (c *Config) Validate() error {
 		}
 		if !slices.Contains(merges, r.Merge) {
 			bad("repos.%s.merge = %q, want one of %v", n, r.Merge, merges)
+		}
+		if r.GateOn != "" && r.GateOn != "coordinator" && r.GateOn != "node" {
+			bad("repos.%s.gate_on = %q, want coordinator or node", n, r.GateOn)
+		}
+		if r.Remote != "" || len(r.Publish) > 0 || r.Fetch != "" || r.Land != "" {
+			bad("repos.%s: remote, publish, fetch and land belong in a node profile ([node]), not the coordinator's", n)
 		}
 		if r.Merge == "branch" && r.BranchPrefix+"T1" == WorkerBranch(1) {
 			bad("repos.%s.branch_prefix = %q delivers T<n> to %s, the branch the worker's own worktree holds: git refuses to move it (use the default %q)",
@@ -332,14 +380,32 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	owner := map[string]string{}
+	locals := 0
 	for _, n := range slices.Sorted(maps.Keys(c.Nodes)) {
 		nd := c.Nodes[n]
-		if nd.Host != "local" && !strings.HasPrefix(nd.Host, "ssh:") {
-			bad("nodes.%s.host = %q, want \"local\" or \"ssh:<alias>\"", n, nd.Host)
+		switch nd.Host {
+		case "local":
+			locals++
+		case "remote":
+		default:
+			bad("nodes.%s.host = %q, want \"local\" (the daemon's machine) or \"remote\" (dials in with swarm node)", n, nd.Host)
+		}
+		if nd.Host == "remote" && len(nd.Accounts) == 0 {
+			bad("nodes.%s: a remote node needs accounts (the providers logged in on it)", n)
 		}
 		for _, a := range nd.Accounts {
 			if _, ok := c.Providers[a]; !ok {
 				bad("nodes.%s.accounts: %q is not a provider", n, a)
+			}
+			if o, dup := owner[a]; dup {
+				bad("provider %s is in the accounts of nodes %s and %s: an account runs on one machine", a, o, n)
+			}
+			owner[a] = n
+		}
+		for _, l := range nd.Labels {
+			if strings.TrimSpace(l) == "" || strings.ContainsAny(l, ", ") {
+				bad("nodes.%s.labels: %q is not a label (one word, no commas)", n, l)
 			}
 		}
 		for _, r := range nd.Roles {
@@ -347,6 +413,9 @@ func (c *Config) Validate() error {
 				bad("nodes.%s.roles: %q is not one of %v", n, r, roles)
 			}
 		}
+	}
+	if locals > 1 {
+		bad("more than one node has host = \"local\": the daemon runs on one machine")
 	}
 	for _, n := range slices.Sorted(maps.Keys(c.MCP)) {
 		m := c.MCP[n]
@@ -371,6 +440,106 @@ func (c *Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// validateNode: a node profile says who the node is, how it reaches the coordinator, and
+// where its copies of the repos are. Providers, gates and merge rules live with the
+// coordinator, which sends them when the node connects.
+func (c *Config) validateNode() error {
+	var errs []error
+	bad := func(f string, a ...any) { errs = append(errs, fmt.Errorf(f, a...)) }
+	if c.Profile.Name == "" {
+		bad("profile.name is required")
+	}
+	if c.Profile.WorktreeRoot == "" {
+		bad("profile.worktree_root is required (outside every repo)")
+	}
+	if c.Node.Name == "" {
+		bad("node.name is required: the coordinator's [nodes.<name>] this machine is")
+	}
+	if len(c.Node.Coordinator) == 0 {
+		bad("node.coordinator is required: the command that runs swarm with the coordinator's profile (e.g. [\"ssh\", \"box\", \"swarm\", \"--profile\", \"/srv/swarm\"])")
+	}
+	if len(c.Repos) == 0 {
+		bad("at least one [repos.<name>] is required: the repos this node can work on")
+	}
+	for _, n := range slices.Sorted(maps.Keys(c.Repos)) {
+		r := c.Repos[n]
+		if r.Path == "" {
+			bad("repos.%s.path is required", n)
+		}
+		if r.Remote == "" {
+			bad("repos.%s.remote is required: the git URL of the coordinator's copy, as this node reaches it", n)
+		}
+		if r.Land != "" && r.Land != "ff" {
+			bad("repos.%s.land = %q, want ff or nothing", n, r.Land)
+		}
+		for i, ps := range r.Publish {
+			if ps.From == "" || !strings.HasPrefix(ps.To, "refs/") {
+				bad("repos.%s.publish[%d]: from is a ref here, to is a full ref there (refs/...)", n, i)
+			}
+		}
+		wt, _ := filepath.Abs(Expand(c.Profile.WorktreeRoot))
+		rp, _ := filepath.Abs(Expand(r.Path))
+		if r.Path != "" && c.Profile.WorktreeRoot != "" && (wt == rp || strings.HasPrefix(wt, rp+string(filepath.Separator))) {
+			bad("profile.worktree_root is inside repos.%s: `git add -A` would sweep worktrees into a commit", n)
+		}
+	}
+	if len(c.Providers) > 0 || len(c.Nodes) > 0 {
+		bad("a node profile has no providers or nodes: they are declared in the coordinator's profile, which sends this node its accounts")
+	}
+	return errors.Join(errs...)
+}
+
+// RawProvider: a provider as the profile wrote it, before ~ was expanded here. A node gets
+// this one: its config_dir and home are paths on that machine, not on this one.
+func (c *Config) RawProvider(id string) Provider {
+	if p, ok := c.raw[id]; ok {
+		if p.PauseAbove == 0 {
+			p.PauseAbove = 80
+		}
+		return p
+	}
+	return c.Providers[id]
+}
+
+// LocalNode: the name of the node the daemon runs as. A profile without nodes, or without
+// a local one, runs as "local".
+func (c *Config) LocalNode() string {
+	for _, n := range slices.Sorted(maps.Keys(c.Nodes)) {
+		if c.Nodes[n].Host == "local" {
+			return n
+		}
+	}
+	return "local"
+}
+
+// NodeOf: the node a provider's account is logged in on; a provider no node lists runs
+// on the local one.
+func (c *Config) NodeOf(provider string) string {
+	for _, n := range slices.Sorted(maps.Keys(c.Nodes)) {
+		if slices.Contains(c.Nodes[n].Accounts, provider) {
+			return n
+		}
+	}
+	return c.LocalNode()
+}
+
+// Remote: whether a node dials in rather than being the daemon's own machine.
+func (c *Config) Remote(node string) bool {
+	n, ok := c.Nodes[node]
+	return ok && n.Host == "remote"
+}
+
+// Labels: every label some node has, for checking a task's runs_on when it is added.
+func (c *Config) Labels() map[string]bool {
+	out := map[string]bool{}
+	for _, n := range c.Nodes {
+		for _, l := range n.Labels {
+			out[l] = true
+		}
+	}
+	return out
 }
 
 // MCPFor: the extra servers a role gets; no roles listed means every role.

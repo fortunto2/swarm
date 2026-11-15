@@ -29,6 +29,10 @@ var migrations = []string{
 	`ALTER TABLE tasks ADD COLUMN base_commit TEXT;`,
 	// 2: the worker's process group, so a restart after a crash can stop orphaned workers
 	`ALTER TABLE attempts ADD COLUMN pid INTEGER;`,
+	// 3: what a task needs from the machine it runs on (node labels, comma-separated), and
+	// the nodes that dial in, as last seen, so status can show them without a daemon
+	`ALTER TABLE tasks ADD COLUMN runs_on TEXT;
+	CREATE TABLE IF NOT EXISTS nodes(name TEXT PRIMARY KEY, seen_at INTEGER NOT NULL, info TEXT NOT NULL DEFAULT '{}');`,
 }
 
 type DB struct {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -73,4 +74,22 @@ func CurrentBranch(ctx context.Context, dir string) string {
 		return ""
 	}
 	return b
+}
+
+// Transfer is Run for the fetches and pushes a node makes to its coordinator's copy: the
+// same hardening, with the file, ssh and https transports allowed (never ext::, which runs
+// a command), and the operator's own environment, so ssh finds its agent and its config.
+// The URL comes from the node's profile, not from a repo a worker can write.
+func Transfer(ctx context.Context, dir string, args ...string) (string, error) {
+	full := append(append(append(append([]string{}, hardened...),
+		"-c", "protocol.file.allow=always", "-c", "protocol.ssh.allow=always", "-c", "protocol.https.allow=always",
+		"-C", dir), args...))
+	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "GIT_LFS_SKIP_SMUDGE=1")
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
+	}
+	return strings.TrimSpace(out.String()), nil
 }

@@ -49,7 +49,8 @@ func (d *Daemon) refreshRegistry(ctx context.Context) error {
 	}
 	for id, p := range d.Cfg.Providers {
 		st := states[id]
-		if until, why := limitsReading(p, now); until > 0 && st.State != "cooling" && st.State != "disabled" {
+		remote := d.Cfg.Remote(d.Cfg.NodeOf(id)) // its limits file is on that machine: the node reports it
+		if until, why := limitsReading(p, now); !remote && until > 0 && st.State != "cooling" && st.State != "disabled" {
 			if err := d.DB.CoolProvider(ctx, id, until, why); err != nil {
 				return err
 			}
@@ -77,15 +78,13 @@ func (d *Daemon) refreshRegistry(ctx context.Context) error {
 // the tier, logged in on this node, not disabled or cooling. Ordered by priority, then id.
 // Slots are not considered here: a busy provider is still eligible, just not free.
 func (d *Daemon) eligible(tier string) []string {
-	node, hasNode := d.Cfg.Nodes[d.Node]
 	var ids []string
-	for id := range d.adapters {
-		p := d.Cfg.Providers[id]
+	for id, p := range d.Cfg.Providers {
 		if !p.Can("worker") || (len(p.Tiers) > 0 && !slices.Contains(p.Tiers, tier)) {
 			continue
 		}
-		if hasNode && len(node.Accounts) > 0 && !slices.Contains(node.Accounts, id) {
-			continue
+		if _, here := d.adapters[id]; !here && !d.Cfg.Remote(d.Cfg.NodeOf(id)) {
+			continue // a local provider whose CLI could not be set up, or was disabled
 		}
 		if st := d.reg.states[id]; st.State == "cooling" || st.State == "disabled" {
 			continue
@@ -103,9 +102,9 @@ func (d *Daemon) eligible(tier string) []string {
 }
 
 // pickProvider: the best eligible provider with a free slot.
-func (d *Daemon) pickProvider(tier string, busy map[string]int) (string, bool) {
+func (d *Daemon) pickProvider(tier string, busy map[string]int, fits func(id string) bool) (string, bool) {
 	for _, id := range d.eligible(tier) {
-		if busy[id] < d.Cfg.Providers[id].Slots {
+		if busy[id] < d.Cfg.Providers[id].Slots && (fits == nil || fits(id)) {
 			return id, true
 		}
 	}
@@ -115,6 +114,7 @@ func (d *Daemon) pickProvider(tier string, busy map[string]int) (string, bool) {
 // ProviderView: one row of `swarm providers` and of swarm_status.
 type ProviderView struct {
 	ID         string   `json:"id"`
+	Node       string   `json:"node"`
 	Kind       string   `json:"kind"`
 	Family     string   `json:"family"`
 	Roles      []string `json:"roles"`
@@ -153,7 +153,7 @@ func ProviderViews(ctx context.Context, cfg *config.Config, d *db.DB) ([]Provide
 			roles = []string{"worker"}
 		}
 		st := states[id]
-		v := ProviderView{ID: id, Kind: p.Kind, Family: p.Family, Roles: roles, Priority: p.Priority,
+		v := ProviderView{ID: id, Node: cfg.NodeOf(id), Kind: p.Kind, Family: p.Family, Roles: roles, Priority: p.Priority,
 			Slots: p.Slots, Running: running[id], Tiers: p.Tiers, State: st.State, Why: st.LastError,
 			SpentToday: spent[id], BudgetDay: p.BudgetUSDDay}
 		if v.State == "" {
@@ -200,3 +200,7 @@ func limitsReading(p config.Provider, now time.Time) (int64, string) {
 	}
 	return until, why
 }
+
+// LimitsReading: until when a provider's account is over its limit, by its limits file
+// (0 when it is not). A node reads its own accounts' files and reports them.
+func LimitsReading(p config.Provider, now time.Time) (int64, string) { return limitsReading(p, now) }
