@@ -56,6 +56,9 @@ func (d *Daemon) maxWorkers() int {
 }
 
 func (d *Daemon) schedule(ctx context.Context) error {
+	if d.draining.Load() {
+		return nil // swarm drain: what runs finishes, nothing new starts
+	}
 	if !d.admitting() && d.hub == nil {
 		return nil // the host said not now (limits.admit); asked again within 15 s
 	}

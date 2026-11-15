@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -60,6 +61,7 @@ type Node struct {
 	mu       sync.Mutex
 	syncing  sync.Mutex         // one keepInStep at a time
 	moves    chan board.NodeCmd // status orders, run one at a time in the order they came
+	doing    atomic.Int64       // orders taken and not yet done (a drain waits for them too)
 	gating   map[string]bool    // gates running here, by task and commit: a repeated order waits for the first
 	up       *rpc.Client
 	token    string
@@ -110,9 +112,15 @@ func (n *Node) Run(ctx context.Context) error {
 	errc := make(chan error, 1)
 	go func() { errc <- n.serveWorkers(ctx) }()
 	backoff := time.Second
+	_ = os.Remove(DrainFlag(n.Cfg.StatePath())) // a drain is one process's: this one takes work
 	for ctx.Err() == nil {
 		start := time.Now()
 		err := n.session1(ctx)
+		if errors.Is(err, errDrained) {
+			n.Log.Info("drained: nothing runs here, exiting for a restart")
+			_ = os.Remove(DrainFlag(n.Cfg.StatePath()))
+			return nil
+		}
 		if ctx.Err() != nil {
 			break
 		}
@@ -240,6 +248,9 @@ func (n *Node) session1(ctx context.Context) error {
 	}
 	n.Log.Info("connected", "node", n.Cfg.Node.Name, "repos", slices.Sorted(maps.Keys(n.welcome.Repos)))
 	for ctx.Err() == nil {
+		if n.drained() {
+			return errDrained
+		}
 		n.refreshAdmit(ctx)
 		var orders board.NodeOrders
 		err := n.call(ctx, "node_poll", board.NodePoll{Session: n.session, Admit: n.admit, Why: n.why,
@@ -265,7 +276,8 @@ func (n *Node) session1(ctx context.Context) error {
 				}
 				continue
 			}
-			go n.do(ctx, c)
+			n.doing.Add(1)
+			go func(c board.NodeCmd) { defer n.doing.Add(-1); n.do(ctx, c) }(c)
 		}
 	}
 	return ctx.Err()
@@ -373,8 +385,34 @@ func (n *Node) worktrees() []board.TaskRef {
 	return out
 }
 
+// DrainFlag: `swarm drain` on a node profile leaves it; the node then takes no new work and
+// exits once nothing runs, for its supervisor to start the new binary.
+func DrainFlag(stateDir string) string { return filepath.Join(stateDir, "draining") }
+
+// errDrained ends Run: the node drained and exits for a restart.
+var errDrained = errors.New("drained")
+
+func (n *Node) draining() bool {
+	_, err := os.Stat(DrainFlag(n.Cfg.StatePath()))
+	return err == nil
+}
+
+// drained: draining and nothing of ours left (no worker, no gate).
+func (n *Node) drained() bool {
+	if !n.draining() {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.doing.Load() == 0 && len(n.running) == 0 && len(n.gating) == 0
+}
+
 // refreshAdmit asks this machine's limits.admit, at most every 15 s.
 func (n *Node) refreshAdmit(ctx context.Context) {
+	if n.draining() {
+		n.admit, n.why = false, "draining for a restart (swarm drain --cancel)"
+		return
+	}
 	if n.Cfg.Limits.Admit == "" {
 		n.admit, n.why = true, ""
 		return

@@ -327,3 +327,79 @@ func TestNodeGateWaitsForItsNode(t *testing.T) {
 		t.Fatalf("want two gates, both on n1; got %s", g)
 	}
 }
+
+// swarm drain: what runs finishes and merges, nothing new starts, and the daemon exits 0
+// for its supervisor to start the new binary.
+func TestDrainFinishesInFlightWorkThenExits(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, "sleep 3\n"+goodWorker, 3)
+	addTask(t, prof, "two.go,two_test.go")
+	daemon := exec.Command(bin, "--profile", prof, "daemon")
+	var dlog bytes.Buffer
+	daemon.Stdout, daemon.Stderr = &dlog, &dlog
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- daemon.Wait() }()
+	t.Cleanup(func() { _ = daemon.Process.Kill() })
+	waitFor(t, 30*time.Second, func() bool { return strings.Contains(status(t, prof), "running      1") }, "the task never started")
+	if out, err := swarm(t, prof, 30*time.Second, "drain"); err != nil || !strings.Contains(out, `"draining":true`) {
+		t.Fatalf("drain: %v %s", err, out)
+	}
+	if st := status(t, prof); !strings.Contains(st, "draining:") {
+		t.Fatalf("status does not say it drains:\n%s", st)
+	}
+	if out, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--title", "later", "--spec", "s",
+		"--acceptance", "a", "--files", "later.go"); err != nil {
+		t.Fatalf("task add while draining: %v %s", err, out)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the drained daemon exited with %v\n%s", err, dlog.String())
+		}
+	case <-time.After(3 * time.Minute):
+		t.Fatalf("the daemon did not exit after draining\n%s\n%s", status(t, prof), dlog.String())
+	}
+	st := status(t, prof)
+	if !strings.Contains(st, "merged       1") || !strings.Contains(st, "ready        1") {
+		t.Fatalf("want the running task merged and the later one untouched:\n%s", st)
+	}
+	if _, err := os.Stat(filepath.Join(prof, "state", "draining")); err == nil {
+		t.Fatal("the drain flag outlived the daemon that drained")
+	}
+}
+
+// swarm drain on a node profile: the node takes no new work, waits for its worker, exits 0.
+func TestNodeDrainWaitsForItsWorkerThenExits(t *testing.T) {
+	coord, nodeProf, _, _ := nodeBed(t, "sleep 4\n"+goodWorker, "coordinator", "")
+	addTask(t, coord, "two.go,two_test.go")
+	n, nlog := startNode(t, nodeProf)
+	ndone := make(chan error, 1)
+	go func() { ndone <- n.Wait() }()
+	daemon := exec.Command(bin, "--profile", coord, "daemon")
+	var dlog bytes.Buffer
+	daemon.Stdout, daemon.Stderr = &dlog, &dlog
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() })
+	waitFor(t, 30*time.Second, func() bool { return strings.Contains(nlog.String(), `"msg":"worker started"`) }, "no worker started on the node")
+	if out, err := swarm(t, nodeProf, 30*time.Second, "drain"); err != nil || !strings.Contains(out, "draining") {
+		t.Fatalf("node drain: %v %s", err, out)
+	}
+	select {
+	case err := <-ndone:
+		if err != nil {
+			t.Fatalf("the drained node exited with %v\n%s", err, nlog.String())
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatalf("the node did not exit after draining\n%s", nlog.String())
+	}
+	if !strings.Contains(nlog.String(), `"msg":"worker exited"`) {
+		t.Fatalf("the node exited before its worker did:\n%s", nlog.String())
+	}
+	waitFor(t, 2*time.Minute, func() bool { return strings.Contains(status(t, coord), "merged       1") },
+		"the drained node's task did not merge")
+}

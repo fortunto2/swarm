@@ -40,6 +40,10 @@ func hide(o op) op { o.hidden = true; return o }
 
 type empty struct{}
 
+type drainIn struct {
+	Cancel bool `json:"cancel,omitempty"`
+}
+
 type noteIn struct {
 	Kind string `json:"kind" jsonschema:"plan, progress, finding or question"`
 	Body string `json:"body" jsonschema:"at most 8192 bytes"`
@@ -100,6 +104,16 @@ var ops = []op{
 		func(s *Service, ctx context.Context, tok string, in notesIn) (any, error) {
 			return s.CancelTask(ctx, tok, in.TaskID)
 		}),
+	hide(def("swarm_drain", "lead", "Finish what is in flight, start nothing new, then exit (for an upgrade). Used by `swarm drain`.",
+		func(s *Service, ctx context.Context, tok string, in drainIn) (any, error) {
+			if _, err := s.lead(tok); err != nil {
+				return nil, err
+			}
+			if s.Drain == nil {
+				return nil, &Error{"internal", "this daemon cannot drain"}
+			}
+			return s.Drain(in.Cancel)
+		})),
 	hide(def("node_hello", "lead", "A node dials in: who it is, what it holds. Used by `swarm node`, not by sessions.",
 		func(s *Service, ctx context.Context, tok string, in NodeHello) (any, error) {
 			return s.NodeHello(ctx, tok, in)

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -104,6 +105,7 @@ type Daemon struct {
 	admit      admission     // the last answer of limits.admit; only the loop touches it
 	admitShown int           // what the log and events last said: 0 nothing yet, 1 admitted, 2 held
 	admitted   chan admission
+	draining   atomic.Bool          // swarm drain: no new workers; exit once nothing is in flight
 	hub        *hub                 // nodes that dial in; nil when the profile has none
 	nodeEv     chan nodeEvent       // their reports, applied on the loop
 	early      map[string]nodeEvent // reports that beat their proc into d.procs (loop-owned)
@@ -193,6 +195,8 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	d.Board.Repo = d.repo
 	d.Board.Providers = func(ctx context.Context) (any, error) { return ProviderViews(ctx, d.Cfg, d.DB) }
 	d.Board.Labels = d.Cfg.Labels
+	d.Board.Drain = d.drain
+	_ = os.Remove(DrainFlag(d.Cfg.StatePath())) // a drain is one daemon's: the next one takes work
 	d.Board.Verify = d.verify
 	if d.hub != nil {
 		d.Board.Nodes = d.hub
@@ -226,6 +230,14 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 			d.Log.Error("tick", "err", err)
 		}
 		if untilIdle && d.idle(ctx) {
+			d.waitBackground()
+			return nil
+		}
+		if d.draining.Load() && len(d.procs) == 0 && len(d.starting) == 0 && len(d.gating) == 0 {
+			d.Log.Info("drained: nothing in flight, exiting for a restart")
+			d.DB.Event(ctx, "swarmd", 0, "drained", nil)
+			_ = os.Remove(DrainFlag(d.Cfg.StatePath()))
+			d.shutdown()
 			d.waitBackground()
 			return nil
 		}
@@ -329,6 +341,27 @@ func (d *Daemon) closeRuns(ctx context.Context) error {
 // SocketPath is short and fixed per state dir: a unix socket path is capped near 104 bytes,
 // and a profile under a long home or a macOS TMPDIR passes that easily. It lives in the
 // user's cache dir (not a world-writable /tmp), which is short on both macOS and Linux.
+// DrainFlag: present while a daemon drains, so status (another process) can say so.
+func DrainFlag(stateDir string) string { return filepath.Join(stateDir, "draining") }
+
+// drain (board op, on an RPC goroutine): the loop reads the flag on its next tick.
+func (d *Daemon) drain(cancel bool) (any, error) {
+	d.draining.Store(!cancel)
+	flag := DrainFlag(d.Cfg.StatePath())
+	if cancel {
+		_ = os.Remove(flag)
+		d.Log.Info("drain cancelled")
+		return map[string]any{"draining": false}, nil
+	}
+	_ = os.WriteFile(flag, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
+	d.Log.Info("draining: no new workers; exits when nothing is in flight")
+	select {
+	case d.wake <- 0:
+	default:
+	}
+	return map[string]any{"draining": true, "hint": "the daemon exits once its attempts and gates are done; its supervisor (launchd, systemd) starts it again"}, nil
+}
+
 // NodeSocketPath: where nodes connect (`swarm relay --node` on this host bridges to it).
 func NodeSocketPath(stateDir string) string {
 	return strings.TrimSuffix(SocketPath(stateDir), ".sock") + ".node.sock"

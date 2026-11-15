@@ -127,6 +127,9 @@ func main() {
 			if s := staleDaemon(c.StatePath(), revision()); s != "" {
 				fmt.Fprintln(out, "  "+s)
 			}
+			if _, err := os.Stat(dispatch.DrainFlag(c.StatePath())); err == nil {
+				fmt.Fprintln(out, "  draining: finishing what is in flight, then exiting for a restart (swarm drain --cancel)")
+			}
 			if why, since, held := d.Held(context.Background()); held && c.Limits.Admit != "" {
 				fmt.Fprintf(out, "  held since %s: %s (limits.admit; nothing new starts)\n",
 					time.Unix(since, 0).UTC().Format("01-02 15:04Z"), why)
@@ -192,7 +195,7 @@ func main() {
 		},
 	})
 	root.AddCommand(reportCmd())
-	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd(), selftestCmd(), versionCmd(), nodeCmd(), relayCmd())
+	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd(), selftestCmd(), versionCmd(), nodeCmd(), relayCmd(), drainCmd())
 
 	if err := root.Execute(); err != nil {
 		if !errors.Is(err, errReported) {

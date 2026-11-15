@@ -206,3 +206,18 @@ server), and let a laptop dial in when it is awake:
    <label>` sends work where it must run.
 
 The whole model, what crosses the link and what a node never does: [nodes.md](nodes.md).
+
+## 8. Upgrading without losing work
+
+Install the new binary, then let each daemon drain instead of killing it:
+
+```sh
+go install github.com/fortunto2/swarm/cmd/swarm@latest   # on every machine
+swarm --profile <coordinator> drain    # finishes what runs, starts nothing new, exits
+swarm --profile <node> drain           # the same, on each node
+```
+
+A draining daemon (or node) starts no new attempt, lets its running attempts and gates
+finish, then exits; launchd (`KeepAlive`) or systemd (`Restart=always`) starts it again on
+the new binary. `swarm status` says `draining` meanwhile; `swarm drain --cancel` takes it
+back. A coordinator and a node one release apart still connect, so the order does not matter.

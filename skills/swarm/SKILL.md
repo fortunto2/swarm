@@ -30,8 +30,9 @@ It does not pay for:
 
 Measured on a live run: a ~700-line feature with tests took ~15 minutes of worker time
 and about $4 at list price on the top tier; a one-function task, $0.19. Restarting the
-daemon while tasks run kills their workers and the work is redone, so do not restart it
-mid-run (install a new binary, restart when `swarm status` shows nothing running). Until
+daemon while tasks run kills their workers and the work is redone: install the new binary and
+run `swarm drain` instead (finishes what runs, starts nothing new, exits for launchd or
+systemd to start the new one; on a node profile it drains the node). Until
 then `swarm status` says `daemon runs <commit>, this binary is <commit>`; `swarm version`
 prints the commit a binary was built from.
 

@@ -161,3 +161,51 @@ func nodeStatus(out io.Writer, c *config.Config) error {
 	fmt.Fprintf(out, "  tasks live on the coordinator: %s status\n", strings.Join(c.Node.Coordinator, " "))
 	return nil
 }
+
+// drainCmd: finish what is in flight, start nothing new, exit; the supervisor (launchd,
+// systemd) starts the new binary. On a node profile it drains the node.
+func drainCmd() *cobra.Command {
+	var cancel bool
+	c := &cobra.Command{
+		Use:   "drain",
+		Short: "Upgrade without losing work: finish what runs, start nothing new, exit (the supervisor restarts it)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := load()
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if c.Node != nil { // a node drains by a flag its own process reads
+				flag := node.DrainFlag(c.StatePath())
+				if cancel {
+					_ = os.Remove(flag)
+					fmt.Fprintln(out, "node drain cancelled")
+					return nil
+				}
+				if err := os.WriteFile(flag, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "node %s draining: it takes no new work and exits once its workers and gates are done\n", c.Node.Name)
+				return nil
+			}
+			cl, err := board.Dial(dispatch.SocketPath(c.StatePath()))
+			if err != nil {
+				return fmt.Errorf("the daemon is not running: %w", err)
+			}
+			defer cl.Close()
+			tok, err := board.OperatorToken(c.StatePath())
+			if err != nil {
+				return err
+			}
+			res, err := cl.Do("swarm_drain", tok, map[string]bool{"cancel": cancel})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(out, string(res))
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&cancel, "cancel", false, "stop draining: take work again")
+	return c
+}

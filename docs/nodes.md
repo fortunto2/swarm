@@ -106,6 +106,12 @@ can ask for a machine: `swarm task add ... --runs-on vpc`, or `runs_on` in `swar
 `swarm status` on the coordinator shows each node: online or when last seen, running,
 holding and why.
 
+## Upgrading
+
+`swarm drain` on the coordinator and on each node: nothing new starts there, what runs
+finishes (gates included), and the process exits for its supervisor to start the new
+binary. A plain restart instead loses the attempts in flight (they run again).
+
 ## Trust
 
 The link is ssh, and ssh is the authentication: whoever can run `swarm relay --node` on the

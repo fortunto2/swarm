@@ -60,6 +60,9 @@ type Service struct {
 	Nodes NodeHub
 	// Labels: node labels a task's runs_on may name.
 	Labels func() map[string]bool
+	// Drain starts (or with cancel, stops) a drain: no new workers; the daemon exits once
+	// what is in flight is done, and its supervisor starts it again on the new binary.
+	Drain func(cancel bool) (any, error)
 
 	mu     sync.Mutex
 	tokens map[string]Identity
