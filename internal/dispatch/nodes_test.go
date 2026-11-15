@@ -76,6 +76,10 @@ func TestFitsMachineRules(t *testing.T) {
 	if d.fits(task("app", "", ""), "far", none) {
 		t.Error("a node silent past node_timeout took work")
 	}
+	d.hub.nodes["mac"].polling = 1 // its poll began long ago and is still held open: it is there
+	if !d.fits(task("app", "", ""), "far", none) {
+		t.Error("a node waiting on a held poll counts as gone")
+	}
 }
 
 // A connected node's live list is the truth about what runs there: a worker that left it

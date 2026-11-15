@@ -61,8 +61,10 @@ type Repo struct {
 	GateReruns   *int   `toml:"gate_reruns" json:"gate_reruns,omitempty"`
 	// GateOn: where the gate commands run. "" or "coordinator": here, in a throwaway
 	// worktree; "node": on the node whose worker made the commit (its machine may be the
-	// one with the cores, the toolchain or the data the suite needs). Its gate waits while
-	// that node is away rather than run here, where the suite may not even start.
+	// one with the cores, the toolchain or the data the suite needs), waiting while that node
+	// is away rather than run here, where the suite may not even start; "<a remote node>":
+	// on that node while it is connected and has the repo, whoever made the commit, else here
+	// (a box's tasks gated on a laptop's cores, measured 2 min there against 15-25 here).
 	GateOn string `toml:"gate_on" json:"gate_on,omitempty"`
 
 	// Node profiles only: how this node keeps its copy in step with the coordinator's.
@@ -330,8 +332,8 @@ func (c *Config) Validate() error {
 		if !slices.Contains(merges, r.Merge) {
 			bad("repos.%s.merge = %q, want one of %v", n, r.Merge, merges)
 		}
-		if r.GateOn != "" && r.GateOn != "coordinator" && r.GateOn != "node" {
-			bad("repos.%s.gate_on = %q, want coordinator or node", n, r.GateOn)
+		if r.GateOn != "" && r.GateOn != "coordinator" && r.GateOn != "node" && c.Nodes[r.GateOn].Host != "remote" {
+			bad("repos.%s.gate_on = %q, want coordinator, node, or the name of a remote node", n, r.GateOn)
 		}
 		if r.Remote != "" || len(r.Publish) > 0 || r.Fetch != "" || r.Land != "" {
 			bad("repos.%s: remote, publish, fetch and land belong in a node profile ([node]), not the coordinator's", n)

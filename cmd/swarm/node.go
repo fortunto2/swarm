@@ -135,7 +135,8 @@ func printNodes(out io.Writer, c *config.Config, d *db.DB) {
 		}
 		_ = json.Unmarshal(r.Info, &info)
 		state := "online"
-		if ago > c.Limits.NodeTimeout.Duration || !dispatch.Running(c.StatePath()) {
+		// the record is written when a poll starts, and a poll is held up to 25 s
+		if ago > max(c.Limits.NodeTimeout.Duration, 30*time.Second) || !dispatch.Running(c.StatePath()) {
 			state = "offline, last seen " + ago.String() + " ago"
 		}
 		line := fmt.Sprintf("  node %-10s %s, %d running", name, state, info.Running)

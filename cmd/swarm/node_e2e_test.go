@@ -403,3 +403,52 @@ func TestNodeDrainWaitsForItsWorkerThenExits(t *testing.T) {
 	waitFor(t, 2*time.Minute, func() bool { return strings.Contains(status(t, coord), "merged       1") },
 		"the drained node's task did not merge")
 }
+
+// gate_on naming a node: a task this machine ran is gated there while the node is
+// connected (a box's work on a laptop's cores), and here once it is gone.
+func TestGateOnANamedNode(t *testing.T) {
+	coord, nodeProf, repo, _ := nodeBed(t, "exit 1\n", "n1", "")
+	// a local account, first in line, with the good worker: the task runs here
+	sh(t, coord, fmt.Sprintf(`printf '\n[providers.here]\nkind = "mock"\nfamily = "mock"\nslots = 1\npriority = -1\ncommand = ["%s"]\n' >> swarm.toml`,
+		filepath.Join(coord, "here.sh")))
+	if err := os.WriteFile(filepath.Join(coord, "here.sh"), []byte("#!/bin/sh\nset -e\n"+goodWorker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := sh(t, repo, "git rev-parse main")
+	if out, err := swarm(t, coord, 30*time.Second, "init"); err != nil {
+		t.Fatalf("init: %v %s", err, out)
+	}
+	daemon := exec.Command(bin, "--profile", coord, "daemon")
+	var dlog bytes.Buffer
+	daemon.Stdout, daemon.Stderr = &dlog, &dlog
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() })
+	_, nlog := startNode(t, nodeProf)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("status:\n%s\ndaemon:\n%s\nnode:\n%s", status(t, coord), dlog.String(), nlog.String())
+		}
+	})
+	waitFor(t, 30*time.Second, func() bool {
+		for _, ln := range strings.Split(status(t, coord), "\n") {
+			if strings.Contains(ln, "node n1 ") && strings.Contains(ln, " online") {
+				return true
+			}
+		}
+		return false
+	}, "the node never connected")
+	addTask(t, coord, "two.go,two_test.go")
+	waitFor(t, 3*time.Minute, func() bool { return strings.Contains(status(t, coord), "merged       1") },
+		"not merged")
+	if sh(t, repo, "git rev-parse main") == before {
+		t.Fatalf("main did not move\n%s\nnode:\n%s", dlog.String(), nlog.String())
+	}
+	if n := sqlite(t, coord, "SELECT group_concat(node) FROM attempts WHERE task_id=1"); n != "local" {
+		t.Fatalf("the task ran on %q, want here", n)
+	}
+	if g := sqlite(t, coord, "SELECT data FROM events WHERE type='gate_started'"); !strings.Contains(g, `"node":"n1"`) {
+		t.Fatalf("the gate of a task run here did not go to the named node: %s", g)
+	}
+}

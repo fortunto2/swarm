@@ -37,10 +37,23 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		// gate_on = "node": the node that made the commit runs the suite; while it is away
 		// the gate waits for it (the suite may not run here at all)
 		node := ""
-		if r.GateOn == "node" {
-			if node = d.onNode(t); node != "" {
-				if rg, ok := d.regate[t.ID]; !d.present(node) || (ok && rg.commit == t.ResultCommit.String && time.Now().Before(rg.at)) {
-					continue
+		waiting := func() bool { // a node gate that just gave no verdict is not ordered again at once
+			rg, ok := d.regate[t.ID]
+			return ok && rg.commit == t.ResultCommit.String && time.Now().Before(rg.at)
+		}
+		switch r.GateOn {
+		case "", "coordinator":
+		case "node":
+			if node = d.onNode(t); node != "" && (!d.present(node) || waiting()) {
+				continue
+			}
+		default: // a named node: there while it is connected and has the repo, else here
+			if d.hub != nil {
+				if online, _, has := d.hub.usable(r.GateOn); online && has(t.Repo) {
+					if waiting() {
+						continue
+					}
+					node = r.GateOn
 				}
 			}
 		}

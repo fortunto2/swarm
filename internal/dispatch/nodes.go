@@ -47,6 +47,7 @@ type nodeState struct {
 	live    []string
 	cmds    []board.NodeCmd
 	wake    chan struct{}
+	polling int // polls held open right now: a node waiting on one is there, however long ago it began
 }
 
 // nodeEvent: a report the loop must apply (it owns the proc map), or, with live set, the
@@ -180,7 +181,13 @@ func (h *hub) Poll(ctx context.Context, in board.NodePoll) (board.NodeOrders, er
 	}
 	wait := min(time.Duration(in.Wait)*time.Second, pollWait)
 	wake := n.wake
+	n.polling++
 	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		n.polling--
+		h.mu.Unlock()
+	}()
 	h.record(ctx, name)
 	h.cool(ctx, name, in.Cool)
 	h.tellLoop(ctx, nodeEvent{node: name, live: in.Live, list: true})
@@ -288,7 +295,7 @@ func (h *hub) View() any {
 		}
 		r := row{Node: name, Labels: nd.Labels}
 		if n, ok := h.nodes[name]; ok {
-			r.Online = time.Since(n.seen) < h.d.Cfg.Limits.NodeTimeout.Duration
+			r.Online = n.polling > 0 || time.Since(n.seen) < h.d.Cfg.Limits.NodeTimeout.Duration
 			r.Seen = n.seen.UTC().Format(time.RFC3339)
 			r.Admit, r.Why, r.Running = n.admit, n.why, len(n.live)
 		}
@@ -375,7 +382,7 @@ func (h *hub) usable(node string) (online, admitting bool, has func(repo string)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	n, ok := h.nodes[node]
-	if !ok || time.Since(n.seen) > h.d.Cfg.Limits.NodeTimeout.Duration {
+	if !ok || (n.polling == 0 && time.Since(n.seen) > h.d.Cfg.Limits.NodeTimeout.Duration) {
 		return false, false, func(string) bool { return false }
 	}
 	repos := n.repos
@@ -387,6 +394,9 @@ func (h *hub) away(node string) time.Duration {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if n, ok := h.nodes[node]; ok {
+		if n.polling > 0 {
+			return 0
+		}
 		return time.Since(n.seen)
 	}
 	return time.Duration(1 << 62)

@@ -127,7 +127,7 @@ same static checks and gate commands the daemon will run.
 | Section | What |
 |---|---|
 | `[profile]` | name, `worktree_root` (must be outside every repo), `state_dir`, `notify`, `secret_cmd` |
-| `[repos.<name>]` | path, `gate` commands, `merge = "ff"` or `"branch"`, `gate_on = "node"` to gate where the work was done |
+| `[repos.<name>]` | path, `gate` commands, `merge = "ff"` or `"branch"`, `gate_on = "node"` (where the work was done) or a node's name (where the cores are) |
 | `[providers.<id>]` | `kind` (claude, codex, mock), `family` (review crosses families), slots, tiers, models, env |
 | `[nodes.<id>]` | machines: `host = "local"` (the daemon's) or `"remote"` (dials in with `swarm node`), their accounts, labels, max workers. [docs/nodes.md](docs/nodes.md) |
 | `[mcp.<name>]` | extra read-only MCP servers for workers and the lead |

@@ -112,6 +112,7 @@ func main() {
 			out := cmd.OutOrStdout()
 			if len(counts) == 0 {
 				fmt.Fprintf(out, "profile %s: no tasks\n", c.Profile.Name)
+				printNodes(out, c, d) // an empty queue is when one checks that the machines are there
 				return nil
 			}
 			fmt.Fprintf(out, "profile %s\n", c.Profile.Name)
