@@ -31,6 +31,9 @@ week of quota by Wednesday. `swarm` is the dull part that makes many agents usab
 
 ## Quick start
 
+Full guide, written so an agent can follow it in a fresh session: [`docs/setup.md`](docs/setup.md)
+(install, a profile, the daemon under launchd, MCP for sessions, the first task).
+
 ```sh
 go install github.com/fortunto2/swarm/cmd/swarm@latest
 
