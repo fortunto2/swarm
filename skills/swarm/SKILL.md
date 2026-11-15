@@ -1,6 +1,6 @@
 ---
 name: swarm
-description: Hand coding work to a swarm of agents that run on official CLIs in separate git worktrees, with a test gate before anything reaches main. Use when the user says "swarm", "раздай агентам", "запусти воркеров", "run this in parallel on several agents", has a spec too big for one session, or asks why a swarm task is blocked. Not for a one-file change (do it yourself) and not for analysis fan-outs that need no worktree (use a Claude workflow).
+description: Hand coding work to a swarm of agents that run on official CLIs in separate git worktrees, with a test gate before anything reaches main. Use when the user says "swarm", "раздай агентам", "запусти воркеров", "run this in parallel on several agents", has a spec too big for one session, or asks why a swarm task is blocked. Only for work a repo's tests can judge, usually a batch of tasks; the default is to do it yourself. Not for a one-file change (do it yourself) and not for analysis fan-outs that need no worktree (use a Claude workflow).
 ---
 
 # swarm
@@ -9,6 +9,29 @@ description: Hand coding work to a swarm of agents that run on official CLIs in 
 judge them, start the daemon, and read the result. The profile (`SWARM_PROFILE` or
 `--profile`) says which repos, providers and policies apply. Never guess a profile: if
 neither is set, ask which one.
+
+## When it pays, and when it does not
+
+Default: do the work yourself. Reach for swarm only when the user asks for it, or when
+there is a queue of independent tasks that a gate can judge and the session has other
+work to do meanwhile.
+
+It pays when all of these hold:
+- the repo has tests that would go red without the change, so the gate means something;
+- the acceptance is checkable by those tests, not by taste;
+- the task is 15+ minutes of work, or there are several that can run in parallel.
+
+It does not pay for:
+- a one-file or one-function change: worker start-up, gate and merge cost minutes and
+  quota that an inline edit does not;
+- work where deciding what to do is the hard part: writing the spec *is* the work;
+- a repo without meaningful tests: the gate passes anything;
+- analysis or exploration with no commit at the end (use a workflow or a subagent).
+
+Measured on a live run: a ~700-line feature with tests took ~15 minutes of worker time
+and about $4 at list price on the top tier; a one-function task, $0.19. Restarting the
+daemon while tasks run kills their workers and the work is redone, so do not restart it
+mid-run (install a new binary, restart when `swarm status` shows nothing running).
 
 ## 0. Two ways in
 
