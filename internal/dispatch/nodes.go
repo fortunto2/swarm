@@ -320,7 +320,9 @@ func (h *hub) record(ctx context.Context, name string) {
 	info := map[string]any{"admit": n.admit, "why": n.why, "running": len(n.live), "version": n.version,
 		"repos": slices.Sorted(maps.Keys(n.repos))}
 	h.mu.Unlock()
-	_ = h.d.DB.NodeSeen(ctx, name, info)
+	if err := h.d.DB.NodeSeen(ctx, name, info); err != nil {
+		h.d.Log.Warn("node state not recorded", "node", name, "err", err)
+	}
 }
 
 // order queues a command for a node and wakes its poll.

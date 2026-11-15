@@ -675,8 +675,8 @@ func (d *DB) NodeSeen(ctx context.Context, name string, info any) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.ExecContext(ctx, `INSERT INTO nodes(name, seen_at, info) VALUES(?, unixepoch(), ?)
-		ON CONFLICT(name) DO UPDATE SET seen_at=excluded.seen_at, info=excluded.info`, name, string(b))
+	_, err = d.ExecContext(ctx, `INSERT INTO nodes(id, state, last_seen, info) VALUES(?, 'ok', unixepoch(), ?)
+		ON CONFLICT(id) DO UPDATE SET state='ok', last_seen=excluded.last_seen, info=excluded.info`, name, string(b))
 	return err
 }
 
@@ -688,7 +688,7 @@ type NodeRow struct {
 }
 
 func (d *DB) Nodes(ctx context.Context) ([]NodeRow, error) {
-	rows, err := d.QueryContext(ctx, `SELECT name, seen_at, info FROM nodes ORDER BY name`)
+	rows, err := d.QueryContext(ctx, `SELECT id, coalesce(last_seen, 0), info FROM nodes ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}

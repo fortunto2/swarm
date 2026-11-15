@@ -44,7 +44,8 @@ const (
 	admitEvery    = 15 * time.Second
 	syncEvery     = 2 * time.Minute // fetch/publish/deliveries, besides when main moves
 	tailBytes     = 64 << 10
-	transferLimit = 2 * time.Minute // one fetch or push; a stalled ssh must not hold an order forever
+	transferLimit = 2 * time.Minute  // one fetch or push for an order; a stalled ssh must not hold it forever
+	publishLimit  = 15 * time.Minute // a first publish of a big repo over a slow link (off the poll loop)
 )
 
 // Node is one `swarm node` process.
@@ -640,7 +641,7 @@ func (n *Node) cleanup(ctx context.Context, task int64) {
 // and a rebase need it here); a repo with land = "ff" fast-forwards its main to it; branch
 // deliveries are fetched for the people on this machine; published refs are pushed.
 func (n *Node) keepInStep(ctx context.Context, mains map[string]string) {
-	ctx, cancel := context.WithTimeout(ctx, 3*transferLimit)
+	ctx, cancel := context.WithTimeout(ctx, publishLimit+2*transferLimit)
 	defer cancel()
 	periodic := time.Since(n.synced) > syncEvery
 	if periodic {
@@ -694,10 +695,15 @@ func (n *Node) land(ctx context.Context, name string, r config.Repo, sha string)
 // that moved on is not rewound from here.
 func (n *Node) publish(ctx context.Context, name string, r config.Repo) {
 	if r.Fetch != "" {
-		_, _ = gitx.Transfer(ctx, r.Path, "fetch", "--quiet", r.Fetch)
+		fctx, cancel := context.WithTimeout(ctx, transferLimit)
+		_, _ = gitx.Transfer(fctx, r.Path, "fetch", "--quiet", r.Fetch)
+		cancel()
 	}
 	for _, p := range r.Publish {
-		if _, err := gitx.Transfer(ctx, r.Path, "push", "--quiet", r.Remote, p.From+":"+p.To); err != nil {
+		pctx, cancel := context.WithTimeout(ctx, publishLimit)
+		_, err := gitx.Transfer(pctx, r.Path, "push", "--quiet", r.Remote, p.From+":"+p.To)
+		cancel()
+		if err != nil {
 			n.Log.Warn("publish", "repo", name, "ref", p.From, "err", err)
 		}
 	}

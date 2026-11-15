@@ -91,7 +91,10 @@ fetch = "origin"                           # fetched before publishing, every tw
 ```
 
 `publish` is for a coordinator that branches from a ref only the node can refresh (the
-node can reach the forge, the coordinator cannot). Pushes are never forced. `land = "ff"`
+node can reach the forge, the coordinator cannot). Pushes are never forced. A big repo over
+a slow link: seed the coordinator's copy from a clone already on that machine
+(`git -C copy.git fetch /path/to/clone +refs/heads/main:refs/heads/main`), and publish sends
+only what is new. A publish may take up to 15 minutes; it runs beside the polls, not in them. `land = "ff"`
 fast-forwards the node's main to the coordinator's after merges, when that is a
 fast-forward; with `merge = "branch"`, delivered branches are fetched to the node instead.
 

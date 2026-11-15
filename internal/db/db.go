@@ -33,6 +33,9 @@ var migrations = []string{
 	// the nodes that dial in, as last seen, so status can show them without a daemon
 	`ALTER TABLE tasks ADD COLUMN runs_on TEXT;
 	CREATE TABLE IF NOT EXISTS nodes(name TEXT PRIMARY KEY, seen_at INTEGER NOT NULL, info TEXT NOT NULL DEFAULT '{}');`,
+	// 4: step 3's CREATE was a no-op: the base schema has had a nodes table (id, state,
+	// last_seen, last_error) since phase 0. What status shows about a node goes there.
+	`ALTER TABLE nodes ADD COLUMN info TEXT NOT NULL DEFAULT '{}';`,
 }
 
 type DB struct {

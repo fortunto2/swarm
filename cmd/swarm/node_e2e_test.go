@@ -182,8 +182,8 @@ command = ["/bin/false"]
 		t.Fatal("a worktree was made on the coordinator")
 	}
 	sh(t, clone, "git rev-parse --verify -q refs/swarm/main/app >/dev/null") // the node fetched the coordinator's main
-	if st := status(t, coord); !strings.Contains(st, "node n1") {
-		t.Fatalf("status does not show the node:\n%s", st)
+	if st := status(t, coord); !strings.Contains(st, "node n1") || !strings.Contains(st, "last seen") {
+		t.Fatalf("status does not show when the node was last heard from:\n%s", st)
 	}
 	if st := status(t, nodeProf); !strings.Contains(st, "node n1 (profile n1): running") {
 		t.Fatalf("a node profile's status:\n%s", st)
