@@ -235,3 +235,55 @@ var settledList = func() string {
 	}
 	return strings.Join(q, ",")
 }()
+
+// Promote moves every draft whose dependencies are all merged to ready: the one bulk
+// transition, draft -> ready, kept here with the others.
+func (d *DB) Promote(ctx context.Context) error {
+	_, err := d.ExecContext(ctx, `UPDATE tasks SET status='ready', updated_at=unixepoch()
+		WHERE status='draft' AND NOT EXISTS (
+		  SELECT 1 FROM deps JOIN tasks n ON n.id=deps.needs_id
+		  WHERE deps.task_id=tasks.id AND n.status!='merged')`)
+	return err
+}
+
+func (d *DB) DisableProvider(ctx context.Context, id, why string) error {
+	_, err := d.ExecContext(ctx, `INSERT INTO providers(id, state, last_error) VALUES(?, 'disabled', ?)
+		ON CONFLICT(id) DO UPDATE SET state='disabled', last_error=excluded.last_error`, id, why)
+	return err
+}
+
+type TaskRow struct {
+	ID       int64  `json:"id"`
+	Run      int64  `json:"run"`
+	Repo     string `json:"repo"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Attempts int    `json:"attempts"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// RecentTasks: newest first, at most limit, optionally one status.
+func (d *DB) RecentTasks(ctx context.Context, status string, limit int) ([]TaskRow, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id, run_id, repo, title, status, attempts, coalesce(provider,'')
+		FROM tasks WHERE ?='' OR status=? ORDER BY id DESC LIMIT ?`, status, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TaskRow
+	for rows.Next() {
+		var r TaskRow
+		if err := rows.Scan(&r.ID, &r.Run, &r.Repo, &r.Title, &r.Status, &r.Attempts, &r.Provider); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SpentSince: dollars recorded for attempts started in the last `seconds`.
+func (d *DB) SpentSince(ctx context.Context, seconds int64) (float64, error) {
+	var v float64
+	err := d.QueryRowContext(ctx, `SELECT coalesce(sum(cost_usd),0) FROM attempts WHERE started_at > unixepoch()-?`, seconds).Scan(&v)
+	return v, err
+}

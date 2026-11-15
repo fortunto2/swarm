@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -98,6 +99,23 @@ func main() {
 		},
 	})
 
+	root.AddCommand(&cobra.Command{
+		Use:   "schema",
+		Short: "Print the JSON Schema of swarm.toml (editor completion, CI validation)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s, err := config.Schema()
+			if err != nil {
+				return err
+			}
+			b, err := json.MarshalIndent(s, "", "  ")
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(b))
+			return err
+		},
+	})
 	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd())
 
 	if err := root.Execute(); err != nil {

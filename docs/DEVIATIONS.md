@@ -15,3 +15,9 @@ Each line: what the PRD says, what was done, why.
 - §8 permissions without a sandbox: `--allowedTools` derived from the board, extra MCP servers, git on the own branch (no push) and the first word of each gate command; `allowed_tools` in the provider adds more.
 - §8 worker settings: the operator's user-level hooks/skills load in workers by default (they help); `setting_sources` narrows it per provider.
 - §6 session tools: the lead's tools exist first as session tools for any Claude Code session (status, add, list, notes) under an operator token; the model lead (phase 3) will use the same door.
+- §5 task life cycle: an explicit transition table and guarded `Move` (the PRD lists the statuses; it does not say who may move what). `review` is reachable but unused until phase 4.
+- §5 storage: `branch` and `worktree` are not stored; both derive from (repo, id). Schema versioned with `PRAGMA user_version`.
+- §7 restart: running tasks are reconciled at daemon start instead of waiting for lease expiry, and the restart counts as no failure.
+- §9 merge: a failed fast-forward blocks the task with the reason; the PRD only covers rebase conflicts.
+- §8 gate for workers: `swarm gate` instead of listing the gate commands in the prompt; permission rules from gate commands skip shells, cd, env.
+- sqlc (Schemas First) deferred with a trigger; see docs/hardening.md.

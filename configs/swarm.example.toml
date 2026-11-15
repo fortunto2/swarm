@@ -1,3 +1,4 @@
+#:schema ./swarm.schema.json
 # One profile = one world. Copy into <harness>/swarm/swarm.toml and edit.
 # Secrets are references (secret:<name> resolved by the profile's secret tool, env:<VAR>),
 # never values: Load refuses a token-looking key that holds a literal.

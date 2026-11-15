@@ -8,15 +8,19 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 type Duration struct{ time.Duration }
+
+func (d Duration) MarshalText() ([]byte, error) { return []byte(d.String()), nil }
 
 func (d *Duration) UnmarshalText(b []byte) error {
 	v, err := time.ParseDuration(string(b))
@@ -28,82 +32,82 @@ func (d *Duration) UnmarshalText(b []byte) error {
 }
 
 type Profile struct {
-	Name         string   `toml:"name"`
-	StateDir     string   `toml:"state_dir"`     // relative to the profile dir unless absolute
-	WorktreeRoot string   `toml:"worktree_root"` // outside every repo, never <repo>/.swarm/wt
-	Notify       string   `toml:"notify"`        // command that takes the message as last arg
-	Harness      string   `toml:"harness"`       // harness-core profile dir, for runs.jsonl
-	SecretCmd    []string `toml:"secret_cmd"`    // resolves secret:<name>: argv + name, value on stdout
-	ProjectRules string   `toml:"project_rules"` // file appended to every worker prompt (prompts/project.md)
+	Name         string   `toml:"name" json:"name,omitempty"`
+	StateDir     string   `toml:"state_dir" json:"state_dir,omitempty"`         // relative to the profile dir unless absolute
+	WorktreeRoot string   `toml:"worktree_root" json:"worktree_root,omitempty"` // outside every repo, never <repo>/.swarm/wt
+	Notify       string   `toml:"notify" json:"notify,omitempty"`               // command that takes the message as last arg
+	Harness      string   `toml:"harness" json:"harness,omitempty"`             // harness-core profile dir, for runs.jsonl
+	SecretCmd    []string `toml:"secret_cmd" json:"secret_cmd,omitempty"`       // resolves secret:<name>: argv + name, value on stdout
+	ProjectRules string   `toml:"project_rules" json:"project_rules,omitempty"` // file appended to every worker prompt (prompts/project.md)
 }
 
 type Repo struct {
-	Path        string   `toml:"path"`
-	MainBranch  string   `toml:"main_branch"`
-	Gate        []string `toml:"gate"`
-	GateTimeout Duration `toml:"gate_timeout"`
-	Merge       string   `toml:"merge"` // "ff": ff-only into main; "pr": leave a branch for a human PR
+	Path        string   `toml:"path" json:"path,omitempty"`
+	MainBranch  string   `toml:"main_branch" json:"main_branch,omitempty"`
+	Gate        []string `toml:"gate" json:"gate,omitempty"`
+	GateTimeout Duration `toml:"gate_timeout" json:"gate_timeout,omitempty"`
+	Merge       string   `toml:"merge" json:"merge,omitempty"` // "ff": ff-only into main; "pr": leave a branch for a human PR
 }
 
 type Limits struct {
-	MaxWorkers    int      `toml:"max_workers"`
-	TaskWallClock Duration `toml:"task_wall_clock"`
-	MaxAttempts   int      `toml:"max_attempts"`
-	MaxGates      int      `toml:"max_gates"` // gates running at once; default half of max_workers
+	MaxWorkers    int      `toml:"max_workers" json:"max_workers,omitempty"`
+	TaskWallClock Duration `toml:"task_wall_clock" json:"task_wall_clock,omitempty"`
+	MaxAttempts   int      `toml:"max_attempts" json:"max_attempts,omitempty"`
+	MaxGates      int      `toml:"max_gates" json:"max_gates,omitempty"` // gates running at once; default half of max_workers
 }
 
 type Provider struct {
-	Kind      string            `toml:"kind"`   // claude | codex | mock
-	Family    string            `toml:"family"` // reviewer must come from another family
-	ConfigDir string            `toml:"config_dir"`
-	Home      string            `toml:"home"`
-	Env       map[string]string `toml:"env"` // secret-looking keys must be refs: secret:<name> or env:<VAR>
-	Slots     int               `toml:"slots"`
-	Tiers     []string          `toml:"tiers"`
-	Models    map[string]string `toml:"models"`
-	BudgetUSD float64           `toml:"budget_usd"`
-	Command   []string          `toml:"command"` // kind=mock only: argv of the fake worker
+	Kind      string            `toml:"kind" json:"kind,omitempty"`     // claude | codex | mock
+	Family    string            `toml:"family" json:"family,omitempty"` // reviewer must come from another family
+	ConfigDir string            `toml:"config_dir" json:"config_dir,omitempty"`
+	Home      string            `toml:"home" json:"home,omitempty"`
+	Env       map[string]string `toml:"env" json:"env,omitempty"` // secret-looking keys must be refs: secret:<name> or env:<VAR>
+	Slots     int               `toml:"slots" json:"slots,omitempty"`
+	Tiers     []string          `toml:"tiers" json:"tiers,omitempty"`
+	Models    map[string]string `toml:"models" json:"models,omitempty"`
+	BudgetUSD float64           `toml:"budget_usd" json:"budget_usd,omitempty"`
+	Command   []string          `toml:"command" json:"command,omitempty"` // kind=mock only: argv of the fake worker
 	// kind=claude: which settings load (user,project,local). Empty = the CLI's default, all
 	// of them: the operator's hooks and skills help workers too.
-	SettingSources string `toml:"setting_sources"`
+	SettingSources string `toml:"setting_sources" json:"setting_sources,omitempty"`
 	// kind=claude: tools allowed without a prompt, on top of what swarm derives (board and
 	// extra MCP tools, git on the own branch, the programs of the repo's gate).
-	AllowedTools []string `toml:"allowed_tools"`
+	AllowedTools []string `toml:"allowed_tools" json:"allowed_tools,omitempty"`
 }
 
 type Node struct {
-	Host       string   `toml:"host"` // "local" or "ssh:<alias>"
-	MaxWorkers int      `toml:"max_workers"`
-	Accounts   []string `toml:"accounts"`
-	Roles      []string `toml:"roles"`
+	Host       string   `toml:"host" json:"host,omitempty"` // "local" or "ssh:<alias>"
+	MaxWorkers int      `toml:"max_workers" json:"max_workers,omitempty"`
+	Accounts   []string `toml:"accounts" json:"accounts,omitempty"`
+	Roles      []string `toml:"roles" json:"roles,omitempty"`
 }
 
 // MCPServer: an extra read-only server given to agents next to the board, e.g. a code
 // and session index so a worker can find where a name is defined or what an earlier
 // attempt tried. Roles: "worker", "lead".
 type MCPServer struct {
-	Command string            `toml:"command"`
-	Args    []string          `toml:"args"`
-	Env     map[string]string `toml:"env"`
-	Roles   []string          `toml:"roles"`
+	Command string            `toml:"command" json:"command,omitempty"`
+	Args    []string          `toml:"args" json:"args,omitempty"`
+	Env     map[string]string `toml:"env" json:"env,omitempty"`
+	Roles   []string          `toml:"roles" json:"roles,omitempty"`
 }
 
 // Hooks run after events, best effort: a failing hook is logged, never undoes a merge.
 // Placeholders: {repo} (name), {path} (repo path), {task}, {commit}.
 type Hooks struct {
-	AfterMerge []string `toml:"after_merge"`
-	Timeout    Duration `toml:"timeout"`
+	AfterMerge []string `toml:"after_merge" json:"after_merge,omitempty"`
+	Timeout    Duration `toml:"timeout" json:"timeout,omitempty"`
 }
 
 type Config struct {
-	Dir       string               `toml:"-"` // the profile directory this file was read from
-	Profile   Profile              `toml:"profile"`
-	Repos     map[string]Repo      `toml:"repos"`
-	Limits    Limits               `toml:"limits"`
-	Providers map[string]Provider  `toml:"providers"`
-	Nodes     map[string]Node      `toml:"nodes"`
-	MCP       map[string]MCPServer `toml:"mcp"`
-	Hooks     Hooks                `toml:"hooks"`
+	Dir       string               `toml:"-" json:"-"` // the profile directory this file was read from
+	Profile   Profile              `toml:"profile" json:"profile,omitempty"`
+	Repos     map[string]Repo      `toml:"repos" json:"repos,omitempty"`
+	Limits    Limits               `toml:"limits" json:"limits,omitempty"`
+	Providers map[string]Provider  `toml:"providers" json:"providers,omitempty"`
+	Nodes     map[string]Node      `toml:"nodes" json:"nodes,omitempty"`
+	MCP       map[string]MCPServer `toml:"mcp" json:"mcp,omitempty"`
+	Hooks     Hooks                `toml:"hooks" json:"hooks,omitempty"`
 }
 
 var (
@@ -330,3 +334,18 @@ func (c *Config) resolvePaths() {
 func (c *Config) StatePath() string { return c.Profile.StateDir }
 
 func (c *Config) DBPath() string { return filepath.Join(c.StatePath(), "swarm.db") }
+
+// Schema is the JSON Schema of swarm.toml, inferred from these types, so it cannot drift
+// from what Load accepts. Unknown keys are refused, as Load refuses them.
+func Schema() (*jsonschema.Schema, error) {
+	s, err := jsonschema.For[Config](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[Duration](): {Type: "string", Pattern: `^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`,
+			Description: "a Go duration: 90s, 15m, 1h30m"},
+	}})
+	if err != nil {
+		return nil, err
+	}
+	s.Title = "swarm.toml"
+	s.Schema = "https://json-schema.org/draft/2020-12/schema"
+	return s, nil
+}

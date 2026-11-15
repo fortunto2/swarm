@@ -39,6 +39,8 @@ fail the wall clock. For each:
 - `--files`: the files (or `dir/` prefixes) the task may write. Two tasks running at once
   must not share a file. Lock files, migrations and generated code belong to one task.
 - `--tier`: `A` for hard work, `B` for routine. `S` is reserved for the lead.
+- `--needs`: ids of tasks that must merge first (it waits as draft). Use it instead of
+  hoping two tasks run in the right order.
 
 ```sh
 swarm task add --repo app --title "..." --spec "..." --acceptance "..." --files a.go,a_test.go

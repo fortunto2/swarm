@@ -1,10 +1,13 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 const good = `
@@ -91,5 +94,54 @@ func TestProfileRequired(t *testing.T) {
 	t.Setenv("SWARM_PROFILE", "")
 	if _, err := ResolveProfileDir(""); err == nil {
 		t.Fatal("no flag and no env must be an error, not a guess")
+	}
+}
+
+// The shipped example validates against the inferred schema, and the schema refuses what
+// Load refuses: an unknown key. A schema that drifts from the types fails here.
+func TestSchemaMatchesLoad(t *testing.T) {
+	s, err := Schema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs, err := s.Resolve(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asJSON := func(body string) any {
+		var m map[string]any
+		if _, err := toml.Decode(body, &m); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(m)
+		var v any
+		_ = json.Unmarshal(b, &v)
+		return v
+	}
+	example, err := os.ReadFile("../../configs/swarm.example.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Validate(asJSON(string(example))); err != nil {
+		t.Fatalf("example rejected by the schema: %v", err)
+	}
+	if err := rs.Validate(asJSON(strings.Replace(good, "slots = 2", "slots = 2\nslot = 3", 1))); err == nil {
+		t.Fatal("schema accepted an unknown key that Load refuses")
+	}
+	if err := rs.Validate(asJSON(strings.Replace(string(example), `task_wall_clock = "45m"`, `task_wall_clock = "soon"`, 1))); err == nil {
+		t.Fatal("schema accepted a duration Load cannot parse")
+	}
+}
+
+// configs/swarm.schema.json is what editors read; it must be the generated one.
+func TestCommittedSchemaIsCurrent(t *testing.T) {
+	s, err := Schema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.MarshalIndent(s, "", "  ")
+	got, err := os.ReadFile("../../configs/swarm.schema.json")
+	if err != nil || strings.TrimSpace(string(got)) != string(want) {
+		t.Fatal("configs/swarm.schema.json is stale: run `make schema`")
 	}
 }

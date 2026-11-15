@@ -21,14 +21,7 @@ import (
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
-// promote: draft tasks whose every dependency is merged become ready.
-func (d *Daemon) promote(ctx context.Context) error {
-	_, err := d.DB.ExecContext(ctx, `UPDATE tasks SET status='ready', updated_at=unixepoch()
-		WHERE status='draft' AND NOT EXISTS ( -- draft -> ready, the only bulk transition
-		  SELECT 1 FROM deps JOIN tasks n ON n.id=deps.needs_id
-		  WHERE deps.task_id=tasks.id AND n.status!='merged')`)
-	return err
-}
+func (d *Daemon) promote(ctx context.Context) error { return d.DB.Promote(ctx) }
 
 // pickProvider: a provider that serves the tier, is on this node and has a free slot.
 // Cheapest-first and failed-before ordering arrive with several providers (phase 4).
@@ -277,8 +270,7 @@ func (d *Daemon) finish(ctx context.Context, id int64, p *proc, err error) {
 // wait for another provider; with none left they wait for a person.
 func (d *Daemon) disableProvider(ctx context.Context, id, why string) {
 	delete(d.adapters, id)
-	_, _ = d.DB.ExecContext(ctx, `INSERT INTO providers(id, state, last_error) VALUES(?, 'disabled', ?)
-		ON CONFLICT(id) DO UPDATE SET state='disabled', last_error=excluded.last_error`, id, why)
+	_ = d.DB.DisableProvider(ctx, id, why)
 	d.DB.Event(ctx, "swarmd", 0, "provider_disabled", map[string]string{"provider": id, "why": why})
 	d.Log.Error("provider disabled", "provider", id, "why", why)
 	d.notify(fmt.Sprintf("swarm %s: provider %s disabled: %s", d.Cfg.Profile.Name, id, why))

@@ -50,6 +50,12 @@ swarm status
 Try it without spending quota: a provider with `kind = "mock"` runs a script instead of a
 model, over the same board protocol (`cmd/swarm/e2e_test.go` has working scripts).
 
+## Dependencies
+
+A task can wait for others: `swarm task add --needs 3,4` (or `needs` in `swarm_add_task`).
+It sits as `draft` until every task it needs is merged, then becomes `ready` and is built on
+top of them. Edges only go from a new task to existing ones, so the graph has no cycles.
+
 ## How a task moves
 
 ```
@@ -62,7 +68,13 @@ ready ──claim──▶ running ──report_done──▶ verifying ──ga
 
 A failure that is the model's (gate, timeout) counts as an attempt and its log tail goes
 into the next attempt's prompt. A failure that is the infrastructure's (crash, lost lease)
-does not count against the model.
+does not count against the model. A daemon restart puts its running tasks back at once and
+counts nothing against them. A merge git refuses blocks that one task with the reason.
+
+Every status change goes through one transition table (`internal/db/state.go`) and is
+guarded in the same UPDATE by the status the writer expected, so a late failure cannot
+overwrite a submission that arrived first. Workers run `swarm gate` before submitting: the
+same static checks and gate commands the daemon will run.
 
 ## Profile
 
@@ -76,6 +88,10 @@ does not count against the model.
 | `[nodes.<id>]` | where workers run: `local` or `ssh:<alias>` (multi-node is on the roadmap) |
 | `[mcp.<name>]` | extra read-only MCP servers for workers and the lead |
 | `[hooks]` | `after_merge` commands, e.g. reindex the repo |
+
+`swarm schema` prints the JSON Schema of the file (also in `configs/swarm.schema.json`);
+the example starts with `#:schema ./swarm.schema.json`, which TOML editors use for
+completion and validation.
 
 Secrets are never values in the file: a token-looking key must hold `secret:<name>`
 (resolved by `secret_cmd`) or `env:<VAR>`, and `swarm check` refuses anything else.

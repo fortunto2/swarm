@@ -94,37 +94,13 @@ func (s *Service) AddTask(ctx context.Context, tok string, in AddTaskIn) (map[st
 	return map[string]int64{"run": run, "task": tid}, nil
 }
 
-type TaskRow struct {
-	ID       int64  `json:"id"`
-	Run      int64  `json:"run"`
-	Repo     string `json:"repo"`
-	Title    string `json:"title"`
-	Status   string `json:"status"`
-	Attempts int    `json:"attempts"`
-	Provider string `json:"provider,omitempty"`
-}
-
 // ListTasks: newest first, at most 50, optionally one status. Paged on purpose: a list of
 // every task ever is a context bill, not information.
-func (s *Service) ListTasks(ctx context.Context, tok, status string) ([]TaskRow, error) {
+func (s *Service) ListTasks(ctx context.Context, tok, status string) ([]db.TaskRow, error) {
 	if _, err := s.lead(tok); err != nil {
 		return nil, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT id, run_id, repo, title, status, attempts, coalesce(provider,'')
-		FROM tasks WHERE ?='' OR status=? ORDER BY id DESC LIMIT 50`, status, status)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []TaskRow
-	for rows.Next() {
-		var r TaskRow
-		if err := rows.Scan(&r.ID, &r.Run, &r.Repo, &r.Title, &r.Status, &r.Attempts, &r.Provider); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return s.DB.RecentTasks(ctx, status, 50)
 }
 
 type StatusView struct {
@@ -142,7 +118,7 @@ func (s *Service) Status(ctx context.Context, tok string) (StatusView, error) {
 		return StatusView{}, err
 	}
 	v := StatusView{Tasks: counts, Workers: counts["running"]}
-	_ = s.DB.QueryRowContext(ctx, `SELECT coalesce(sum(cost_usd),0) FROM attempts WHERE started_at > unixepoch()-86400`).Scan(&v.SpentUS)
+	v.SpentUS, _ = s.DB.SpentSince(ctx, 86400)
 	return v, nil
 }
 

@@ -14,9 +14,29 @@ DDD, schemas, ORM). One commit per step, tests first where a contract exists.
 | 7 | Board: one handler table in the service; RPC and MCP generated from it | each operation was written three times (service, RPC, MCP) | done |
 | 8 | `swarm gate` for workers (exact same check as the daemon); permission derivation skips shells and env prefixes | `Bash(sh:*)` / `Bash(cd:*)` from gate commands were too wide or useless | done |
 | 9 | Dependencies through the session tool (`needs`), drafts promoted when deps merge; cycles impossible by construction (edges only from a new task to existing ones) | the DAG existed in the schema but nothing could create an edge | done |
-| 10 | `swarm schema` prints the JSON Schema of swarm.toml; test validates the shipped example against it | editor completion and validation; a schema that drifts from the code fails the test | |
-| 11 | sqlc for static queries (typed Go from SQL) | decided at step 11 after 2 removes the stringly part; see outcome | |
+| 10 | `swarm schema` prints the JSON Schema of swarm.toml; test validates the shipped example against it | editor completion and validation; a schema that drifts from the code fails the test | done |
+| 11 | sqlc for static queries (typed Go from SQL) | decided at step 11 after 2 removes the stringly part; see outcome | deferred |
 
 ## Outcome
 
-(filled in as steps land)
+Steps 1-10 landed, each with a test that goes red without the change where one could be
+written (the restart test was run against a disabled reconcile: it timed out at 61 s).
+
+**Step 11, sqlc: deferred, with a trigger.** Measured: 22 queries, 2 of them dynamic
+(`IN` over a status list) that sqlc would not generate. Step 2 already removed the stringly
+part (`Set(map)` became `Move` + typed `Patch`). sqlc would add a generator step and a
+second style of data access for about ten typed scans. What was worth taking now was done
+instead: the four queries living outside `internal/db` moved into it, so all SQL is in one
+package. Revisit when the query count passes ~40, or at the first bug from a column/scan
+mismatch.
+
+**Answers to the architecture questions, as built:**
+- State machine: explicit (`internal/db/state.go`), transitions in one table, guarded moves.
+- Graph: tasks form a DAG through `deps`; acyclic by construction.
+- Events: a reconcile loop (level-triggered, like a controller) woken early by signals;
+  `events` is the audit log, including every status move. No event sourcing.
+- DDD: bounded contexts are the packages (dispatch, board, gate, provider, db); the task
+  with its attempts is the aggregate; no repository/factory ceremony.
+- Schemas: SQL schema with versioned migrations; MCP input schemas and the swarm.toml
+  JSON Schema are inferred from Go types and pinned by tests.
+- ORM: none; database/sql with all SQL in `internal/db`.
