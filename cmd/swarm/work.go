@@ -146,6 +146,9 @@ func mcpCmd() *cobra.Command {
 		Short: "Stdio MCP server. With --token: a worker's board. Without: the session tools " +
 			"(register once: claude mcp add swarm -- swarm mcp --profile <dir>)",
 		RunE: func(*cobra.Command, []string) error {
+			if token == "" {
+				token = os.Getenv("SWARM_TOKEN") // how a worker's MCP config passes it
+			}
 			if token != "" {
 				cl, err := board.Dial(sock)
 				if err != nil {

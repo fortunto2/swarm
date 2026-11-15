@@ -163,7 +163,7 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapte
 	_ = os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o600)
 	tok := d.Board.Issue(board.Identity{TaskID: t.ID, Role: "worker"})
 	a := provider.Attempt{TaskID: t.ID, Worktree: wt.Path, Dir: dir, Prompt: prompt,
-		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate, Slot: slot, Deny: d.Cfg.WorkerDeny()}
+		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate, Slot: slot, Deny: d.Cfg.WorkerDeny(), Sandbox: d.Cfg.Sandbox}
 	cmd, err := adapter.Command(ctx, a)
 	if err != nil {
 		d.Board.Revoke(tok)

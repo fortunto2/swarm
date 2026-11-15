@@ -107,6 +107,18 @@ type Hooks struct {
 	Timeout    Duration `toml:"timeout" json:"timeout,omitempty"`
 }
 
+// Sandbox: how Claude Code confines a worker's Bash and every process it starts (Seatbelt
+// on macOS, bubblewrap on Linux). On by default: without it, `go test` runs the worker's
+// code as you, past every permission rule. Writes go only to the worktree plus AllowWrite
+// (build caches); reads of credential paths are denied; the network is AllowedDomains only.
+type Sandbox struct {
+	Enabled        *bool    `toml:"enabled" json:"enabled,omitempty"`
+	AllowWrite     []string `toml:"allow_write" json:"allow_write,omitempty"`
+	AllowedDomains []string `toml:"allowed_domains" json:"allowed_domains,omitempty"`
+}
+
+func (s Sandbox) On() bool { return s.Enabled == nil || *s.Enabled }
+
 type Config struct {
 	Dir       string               `toml:"-" json:"-"` // the profile directory this file was read from
 	Profile   Profile              `toml:"profile" json:"profile,omitempty"`
@@ -116,6 +128,7 @@ type Config struct {
 	Nodes     map[string]Node      `toml:"nodes" json:"nodes,omitempty"`
 	MCP       map[string]MCPServer `toml:"mcp" json:"mcp,omitempty"`
 	Hooks     Hooks                `toml:"hooks" json:"hooks,omitempty"`
+	Sandbox   Sandbox              `toml:"sandbox" json:"sandbox,omitempty"`
 }
 
 var (
@@ -352,6 +365,15 @@ func (c *Config) resolvePaths() {
 	for n, m := range c.MCP {
 		m.Command = Expand(m.Command)
 		c.MCP[n] = m
+	}
+	if c.Sandbox.AllowWrite == nil { // build caches of the usual toolchains
+		home, _ := os.UserHomeDir()
+		for _, d := range []string{"Library/Caches/go-build", ".cache", "go/pkg/mod", ".npm", ".cargo/registry"} {
+			c.Sandbox.AllowWrite = append(c.Sandbox.AllowWrite, filepath.Join(home, d))
+		}
+	}
+	for i, p := range c.Sandbox.AllowWrite {
+		c.Sandbox.AllowWrite[i] = Expand(p)
 	}
 }
 

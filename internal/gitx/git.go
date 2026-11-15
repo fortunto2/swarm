@@ -7,11 +7,24 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/fortunto2/swarm/internal/envx"
 )
+
+// hardened: the daemon's git runs on repositories a worker can write to (a worktree shares
+// the main .git), so nothing configured there may execute: no hooks, no fsmonitor, no LFS
+// filters, no network transport. -c on the command line overrides the repo's config.
+var hardened = []string{
+	"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+	"-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=", "-c", "filter.lfs.required=false",
+	"-c", "protocol.allow=never",
+}
 
 // Run executes git in dir and returns trimmed stdout; stderr goes into the error.
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	full := append(append(append([]string{}, hardened...), "-C", dir), args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Env = append(envx.Clean(), "GIT_LFS_SKIP_SMUDGE=1", "GIT_TERMINAL_PROMPT=0")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {

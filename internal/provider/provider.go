@@ -32,23 +32,60 @@ type Attempt struct {
 	Token    string
 	SwarmBin string
 	ExtraMCP map[string]config.MCPServer
-	Gate     []string // the repo's gate commands; their programs are allowed to run
-	Slot     int      // the worker's slot: its port range and anything else that must not collide
-	Deny     []string // absolute paths the worker may neither read nor edit (state, accounts, keys)
+	Gate     []string       // the repo's gate commands; their programs are allowed to run
+	Slot     int            // the worker's slot: its port range and anything else that must not collide
+	Deny     []string       // absolute paths the worker may neither read nor edit (state, accounts, keys)
+	Sandbox  config.Sandbox // OS confinement of the worker's Bash and its children
 }
 
-// DenySettings: Claude Code reads files anywhere unless told otherwise (measured: a worker
-// read /tmp/... outside its worktree with no prompt), so the paths that hold credentials
-// are denied explicitly, for reading and editing. "//" marks an absolute path in a rule.
-func DenySettings(paths []string) string {
+// WorkerSettings: the --settings JSON of a worker.
+//
+// Permission deny rules cover Claude's own tools: credential paths may not be read or
+// edited (the CLI reads anywhere otherwise: measured), and inside the worktree the files
+// that configure an agent or git (.claude/, .mcp.json, CLAUDE.md, AGENTS.md, .git) may not
+// be edited, so a worker cannot widen its own permissions for its next attempt.
+//
+// The sandbox covers Bash and every process it starts, which deny rules do not: `go test`
+// runs the worker's code. Reads of the same paths are denied, writes go to the worktree
+// and the build caches only, the network to the listed domains only, and a sandbox that
+// cannot start fails the run instead of running unconfined.
+func WorkerSettings(a Attempt) string {
 	var rules []string
-	for _, p := range paths {
+	add := func(p string, tools ...string) {
 		p = strings.TrimSuffix(p, "/")
-		for _, tool := range []string{"Read", "Edit", "Write", "Glob", "Grep"} {
+		for _, tool := range tools {
 			rules = append(rules, tool+"(/"+p+"/**)", tool+"(/"+p+")")
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"permissions": map[string]any{"deny": rules}})
+	for _, p := range a.Deny {
+		add(p, "Read", "Edit", "Write", "Glob", "Grep")
+	}
+	if a.Worktree != "" {
+		for _, f := range []string{".claude", ".mcp.json", "CLAUDE.md", "AGENTS.md", ".git"} {
+			add(filepath.Join(a.Worktree, f), "Edit", "Write")
+		}
+	}
+	settings := map[string]any{"permissions": map[string]any{"deny": rules}}
+	if a.Sandbox.On() {
+		domains := a.Sandbox.AllowedDomains
+		if domains == nil {
+			domains = []string{}
+		}
+		settings["sandbox"] = map[string]any{
+			"enabled":                  true,
+			"autoAllowBashIfSandboxed": true,
+			"allowUnsandboxedCommands": false,
+			"failIfUnavailable":        true,
+			"filesystem": map[string]any{
+				"allowWrite": a.Sandbox.AllowWrite,
+				"denyRead":   a.Deny,
+			},
+			// the board's socket is the one local door a worker needs (swarm gate, swarm board)
+			"network": map[string]any{"allowedDomains": domains, "strictAllowlist": true,
+				"allowUnixSockets": []string{a.Socket}},
+		}
+	}
+	b, _ := json.Marshal(settings)
 	return string(b)
 }
 
@@ -178,9 +215,7 @@ func (c claude) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
 		"--disallowedTools", "Agent,Task,Workflow",
 		"--allowedTools", strings.Join(AllowedTools(a, c.p.AllowedTools), ","),
 		"--permission-mode", "acceptEdits"}
-	if len(a.Deny) > 0 {
-		args = append(args, "--settings", DenySettings(a.Deny))
-	}
+	args = append(args, "--settings", WorkerSettings(a))
 	if c.p.SettingSources != "" {
 		args = append(args, "--setting-sources", c.p.SettingSources)
 	}
@@ -200,8 +235,10 @@ func (c claude) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
 // WriteMCPConfig writes the Claude-format MCP config: the board plus the profile's extra
 // servers for this role, with their env references resolved.
 func WriteMCPConfig(ctx context.Context, a Attempt, prof config.Profile) (string, error) {
+	// the token travels in the server's environment, not its argv: argv is in `ps` for anyone
 	servers := map[string]any{"board": map[string]any{
-		"command": a.SwarmBin, "args": []string{"mcp", "--socket", a.Socket, "--token", a.Token},
+		"command": a.SwarmBin, "args": []string{"mcp", "--socket", a.Socket},
+		"env": map[string]string{"SWARM_TOKEN": a.Token},
 	}}
 	for name, m := range a.ExtraMCP {
 		env, err := ResolveEnv(ctx, m.Env, prof)
