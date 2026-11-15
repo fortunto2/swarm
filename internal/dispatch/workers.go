@@ -628,7 +628,5 @@ func overlapping(claims []string, inFlight map[int64][]string) int64 {
 	return 0
 }
 
-
-
 // FileTail: the last n bytes of a file (a worker's log).
 func FileTail(path string, n int64) string { return fileTail(path, n) }
