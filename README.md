@@ -117,7 +117,7 @@ same static checks and gate commands the daemon will run.
 
 ## Profile
 
-`configs/swarm.example.toml` is the full reference. The parts that matter:
+`configs/swarm.example.toml` is the full reference (`configs/node.example.toml` for a machine that dials in). The parts that matter:
 
 | Section | What |
 |---|---|

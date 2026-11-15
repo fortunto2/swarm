@@ -1,0 +1,32 @@
+#:schema ./swarm.schema.json
+# A node: a machine that dials the coordinator and runs the workers of its accounts here.
+# The coordinator's profile declares it ([nodes.laptop] host = "remote", accounts, labels)
+# and holds the providers, gates and merge rules; this file says who this machine is, how it
+# reaches the coordinator, and where its copies of the repos are. docs/nodes.md.
+#
+#   swarm --profile <this dir> node --check   # prove the link, take no work
+#   swarm --profile <this dir> node           # run it (launchd agent / systemd user unit)
+
+[profile]
+name = "laptop"
+state_dir = "state"                      # attempts, gates, the workers' socket
+worktree_root = "~/src/.worktrees"       # outside every repo
+safety = "trusted"                       # "strict" sandboxes the workers here
+secret_cmd = ["keys", "get"]             # resolves secret:<name> in this machine's accounts
+deny_paths = ["~/src/app/.env"]          # workers here may neither read nor edit these
+
+[node]
+name = "laptop"                          # the coordinator's [nodes.laptop]
+coordinator = ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30",
+  "box.example.com", "swarm", "--profile", "/srv/swarm"]
+
+[repos.app]
+path = "~/src/app"
+remote = "box.example.com:src/app"       # the coordinator's copy, as git reaches it from here
+fetch = "origin"                         # this machine reaches the forge; the coordinator may not
+publish = [{ from = "refs/remotes/origin/main", to = "refs/remotes/laptop/main" }]
+# land = "ff"                            # fast-forward this machine's main after merges
+
+# [hooks]
+# a board on this machine follows the tasks it runs; {worktree} is the path here
+# on_status = ["~/bin/board-card {task} {status} {worktree} '{title}'"]

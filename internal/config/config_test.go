@@ -68,6 +68,20 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 }
 
+func TestNodeExampleLoads(t *testing.T) {
+	b, err := os.ReadFile("../../configs/node.example.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(write(t, string(b)))
+	if err != nil {
+		t.Fatalf("the shipped node example must be valid: %v", err)
+	}
+	if c.Node == nil || c.Node.Name != "laptop" || len(c.Repos["app"].Publish) != 1 {
+		t.Fatalf("node example: %+v", c.Node)
+	}
+}
+
 func TestRejects(t *testing.T) {
 	cases := map[string]struct{ from, to, want string }{
 		"plaintext secret": {`"secret:kimi"`, `"sk-live-123"`, "holds a value"},
