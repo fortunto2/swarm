@@ -108,7 +108,12 @@ func main() {
 			if !dispatch.Running(c.StatePath()) {
 				// a hold recorded by a daemon that is gone says nothing about now
 				fmt.Fprintln(out, "  daemon not running: nothing starts until `swarm daemon` runs")
-			} else if why, since, held := d.Held(context.Background()); held && c.Limits.Admit != "" {
+				return nil
+			}
+			if s := staleDaemon(c.StatePath(), revision()); s != "" {
+				fmt.Fprintln(out, "  "+s)
+			}
+			if why, since, held := d.Held(context.Background()); held && c.Limits.Admit != "" {
 				fmt.Fprintf(out, "  held since %s: %s (limits.admit; nothing new starts)\n",
 					time.Unix(since, 0).UTC().Format("01-02 15:04Z"), why)
 			}
@@ -172,7 +177,7 @@ func main() {
 		},
 	})
 	root.AddCommand(reportCmd())
-	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd(), selftestCmd())
+	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd(), selftestCmd(), versionCmd())
 
 	if err := root.Execute(); err != nil {
 		if !errors.Is(err, errReported) {

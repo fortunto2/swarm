@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -138,6 +139,8 @@ func runDaemon(ctx context.Context, c *config.Config, untilIdle bool, logTo io.W
 		return err
 	}
 	defer release()
+	// best effort: without it status only loses the stale-build warning
+	_ = os.WriteFile(filepath.Join(c.StatePath(), revFile), []byte(revision()+"\n"), 0o644)
 	d, err := db.Open(c.DBPath())
 	if err != nil {
 		return err

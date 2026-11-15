@@ -1149,6 +1149,18 @@ func TestAdmitHoldsWorkUntilTheHostSaysYes(t *testing.T) {
 		t.Fatalf("a held host started work anyway:\n%s\n%s", st, log.String())
 	} else if !strings.Contains(st, "held since") || !strings.Contains(st, "another job runs") {
 		t.Fatalf("status does not say why ready work waits:\n%s", st)
+	} else if strings.Contains(st, "daemon runs") {
+		t.Fatalf("a daemon on this very binary is reported as another build:\n%s", st)
+	}
+	// a go install without a restart: the daemon wrote an older commit than this binary's
+	if v, _ := swarm(t, prof, 10*time.Second, "version"); !strings.Contains(v, "unknown") {
+		rev := filepath.Join(prof, "state", "daemon.rev")
+		if err := os.WriteFile(rev, []byte("0000000\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if st := status(t, prof); !strings.Contains(st, "daemon runs 0000000, this binary is") {
+			t.Fatalf("status does not flag a daemon on an older build:\n%s", st)
+		}
 	}
 	// the daemon goes away while holding: its last answer must not read as the present
 	_ = daemon.Process.Signal(os.Interrupt)
