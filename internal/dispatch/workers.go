@@ -219,6 +219,9 @@ func (d *Daemon) applyStart(ctx context.Context, s started) {
 	}
 	_ = d.DB.SetAttemptPid(ctx, s.p.log, s.p.cmd.Process.Pid)
 	d.procs[s.taskID] = s.p
+	if len(d.Cfg.Hooks.OnStatus) > 0 {
+		d.statusHook(s.taskID, db.Running) // now the worktree exists for a board to label
+	}
 	d.DB.Event(ctx, "swarmd", s.taskID, "started", map[string]string{"provider": pid, "log": s.p.log, "node": d.Node})
 	d.Log.Info("worker started", "task", s.taskID, "provider", pid)
 }

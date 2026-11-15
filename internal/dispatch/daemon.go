@@ -134,7 +134,11 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	d.Board.Locate = d.locate
 	d.Board.Notify = d.notify
 	if len(d.Cfg.Hooks.OnStatus) > 0 {
-		d.DB.OnMove = d.statusHook
+		d.DB.OnMove = func(id int64, to db.Status) {
+			if to != db.Running { // running is announced once the worker (and its worktree) exists
+				d.statusHook(id, to)
+			}
+		}
 	}
 	d.Board.Redact = d.redact.Apply
 	d.Board.Strict = d.Cfg.Strict()

@@ -828,7 +828,8 @@ func TestRedactionFilter(t *testing.T) {
 func TestStatusHookAndReport(t *testing.T) {
 	repo := testbed(t)
 	log := filepath.Join(t.TempDir(), "moves")
-	prof := profile(t, repo, goodWorker, 4, fmt.Sprintf("\n[hooks]\non_status = [\"echo {task} {status} {topic} >> %s\"]\n", log))
+	// [ -d ] records whether the worktree existed when the hook ran: a board labels it then
+	prof := profile(t, repo, goodWorker, 4, fmt.Sprintf("\n[hooks]\non_status = [\"[ -d {worktree} ] && echo {task} {status} {topic} >> %s\"]\n", log))
 	if out, err := swarm(t, prof, 30*time.Second, "task", "add", "--files", "**", "--repo", "app", "--topic", "billing#3",
 		"--title", "t", "--spec", "s", "--acceptance", "a"); err != nil {
 		t.Fatalf("%v %s", err, out)
