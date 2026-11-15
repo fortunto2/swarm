@@ -117,3 +117,22 @@ Write to a denied path all refused).
   classification tables). Three flaky tests fixed (sleep as a handshake, pkill by pattern
   that also hit leftovers from earlier runs, a timing-dependent merge test).
 - Socket limits: connection cap, bytes per connection, notes per task.
+
+**Round 3** (attacker on the new defences, lifecycle of the new code):
+- Lifecycle, fixed (fdf33d2): cancel ends the attempt and stops the gate, cancel refused
+  while merging, retry checks dependencies and reopens the run and resets the rebase-conflict
+  count, conflicts detected as unmerged paths with LC_ALL=C, orphan kill checks process age,
+  a gate failure on a daemon-rebased commit says so.
+- Security, fixed: --literal-pathspecs and no external diff/textconv/attributes in daemon
+  git (a file named [a]_test.go hid its diff), wider protected paths and test files, extra
+  MCP servers limited to listed tools, resolved MCP secrets deleted with the attempt.
+
+**Safety levels (decision, 2026-11-15).** The operator trusts his workers and works in a
+small group: security must not slow the work. Default `trusted` keeps the guards against
+mistakes; everything that treats the worker as an attacker moved behind `safety = "strict"`
+(OS sandbox, settings from user level only, env allowlist, explicit MCP tools, protected
+paths and shrinking tests failing the gate, files required). Not built, strict-only, for
+when the swarm runs code it does not trust: the gate's own OS sandbox (it runs the worker's
+tests on the host), per-task build caches (shared caches are poisonable), the daemon making
+the commit so the worker never writes .git, process trees escaping with setsid, per-token
+socket caps.

@@ -52,21 +52,27 @@ model, over the same board protocol (`cmd/swarm/e2e_test.go` has working scripts
 
 ## Safety model
 
-A worker is an agent with a shell, so it is treated as untrusted:
+Two levels, set per profile with `safety`.
 
-- **OS sandbox** (Claude Code's own, Seatbelt on macOS, bubblewrap on Linux) around its Bash
-  and every process it starts: the profile's state, account dirs and key stores cannot be
-  read; writes go to its worktree and build caches only; the network is
-  `[sandbox] allowed_domains` only. A sandbox that cannot start fails the run.
-- **Permission rules** for Claude's own tools: the same paths denied, and the files that
-  configure an agent or git (`.claude/`, `.mcp.json`, `CLAUDE.md`, `.git`) not editable.
-- **The gate** decides, not the worker: every task declares the files it may write (`**`
-  for the whole repo, on purpose); deleted, skipped, focused or shrunk tests fail; so do
-  changes to agent, CI or git configuration unless the spec says `[allow-protected]`.
-- **The daemon's own git** runs nothing a worker could plant: hooks, fsmonitor and LFS
-  filters are off; gate commands get no credentials.
-- **The board** is a unix socket (0600) with a token per attempt, limits per connection,
-  and roles enforced per operation.
+**`trusted` (default)**: your own workers, a small team. Guards against mistakes, at no
+cost to the work:
+
+- the gate decides, not the worker: claimed files only (a task without `--files` takes the
+  whole repo and runs alone), no deleted, skipped or focused tests, the repo's own checks;
+- what merges is the gated commit, as a fast-forward; nothing is ever pushed;
+- Claude's tools cannot read the profile's state (operator token), account dirs or key
+  stores; the daemon's git runs no hooks or filters from the repo; gate commands get no
+  account or billing variables;
+- changes to agent, CI or git configuration and test files that shrank are reported as
+  warnings on the task, not failures.
+
+**`strict`**: workers treated as untrusted (outside contributors, unattended overnight
+runs on someone else's code). Adds Claude Code's OS sandbox around every worker's Bash and
+the processes it starts (no reads of credential paths, writes only to the worktree and
+caches, network only to `[sandbox] allowed_domains`), user-level settings only, an
+environment allowlist, explicit tool lists for extra MCP servers, files required on every
+task, and protected paths and shrinking tests fail the gate. The sandbox can also be
+switched on alone with `[sandbox] enabled = true`.
 
 Blocked tasks wait for a person: `swarm task retry <id>` (counters reset) or
 `swarm task cancel <id>` (a running worker is stopped), or the same through MCP.

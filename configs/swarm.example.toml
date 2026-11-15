@@ -9,6 +9,7 @@ state_dir = "state"                       # relative to this file's dir: swarm.d
 worktree_root = "~/.swarm/wt/example"     # outside every repo
 notify = "echo"                           # command; the message is appended as the last arg
 harness = ""                              # harness-core profile dir for runs.jsonl, optional
+safety = "trusted"                        # trusted (default): guards against mistakes; strict: workers untrusted, OS sandbox
 
 [repos.app]
 path = "~/code/app"
@@ -68,6 +69,7 @@ roles = ["supervisor", "tree"]
 command = "~/.solo/bin/solograph"
 args = []
 roles = ["worker", "lead"]
+tools = ["symbol_search"] # code index only: session and notes search can hold pasted secrets
 
 [hooks]
 # reindex the repo after each merge, so the next worker's search sees the merged code

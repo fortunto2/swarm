@@ -169,7 +169,7 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapte
 	_ = os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o600)
 	tok := d.Board.Issue(board.Identity{TaskID: t.ID, Role: "worker"})
 	a := provider.Attempt{TaskID: t.ID, Worktree: wt.Path, Dir: dir, Prompt: prompt,
-		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate, Slot: slot, Deny: d.Cfg.WorkerDeny(), Sandbox: d.Cfg.Sandbox}
+		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate, Slot: slot, Deny: d.Cfg.WorkerDeny(), Sandbox: d.Cfg.Sandbox, Strict: d.Cfg.Strict()}
 	cmd, err := adapter.Command(ctx, a)
 	if err != nil {
 		d.Board.Revoke(tok)
@@ -325,6 +325,8 @@ func (d *Daemon) reap(ctx context.Context) {
 func (d *Daemon) release(id int64, p *proc) {
 	d.Board.Revoke(p.token)
 	delete(d.procs, id)
+	// the MCP config holds resolved secrets of extra servers: gone with the attempt
+	_ = os.Remove(filepath.Join(filepath.Dir(p.log), "mcp.json"))
 }
 
 // finish: the process exited. Usage is recorded whatever happened. If it reported, the

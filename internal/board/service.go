@@ -45,6 +45,8 @@ type Service struct {
 	Locate func(t db.Task) worktree.WT
 	// Repo gives a profile repo's settings (the gate a worker runs on itself).
 	Repo func(name string) (config.Repo, error)
+	// Strict: the profile's safety level (files required on tasks).
+	Strict bool
 	// Notify tells the operator (the profile's notifier); nil means nobody is listening.
 	Notify func(msg string)
 	// Providers gives the provider registry view (declared + live).

@@ -41,6 +41,7 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		d.gating[t.ID] = true
 		id, commit := t.ID, t.ResultCommit.String
 		grants := gate.GrantsFrom(t.Spec)
+		grants.Strict = d.Cfg.Strict()
 		dir := filepath.Join(d.Cfg.StatePath(), "gates", fmt.Sprintf("T%d-%.12s", id, commit))
 		gctx, cancel := context.WithCancel(ctx)
 		d.gateCancel[id] = cancel
@@ -81,6 +82,12 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 	}
 	d.DB.Event(ctx, "swarmd", r.taskID, "gate_"+map[bool]string{true: "pass", false: "fail"}[r.v.OK],
 		map[string]string{"stage": r.v.Stage, "reason": r.v.Reason})
+	if len(r.v.Warnings) > 0 {
+		d.DB.Event(ctx, "swarmd", r.taskID, "gate_warning", map[string]any{"warnings": r.v.Warnings})
+		if t, err := d.DB.GetTask(ctx, r.taskID); err == nil {
+			_ = d.DB.Note(ctx, t.RunID, r.taskID, "swarmd", "review", "gate warning: "+strings.Join(r.v.Warnings, "; "))
+		}
+	}
 	if len(r.v.Flaky) > 0 {
 		d.DB.Event(ctx, "swarmd", r.taskID, "gate_flaky", map[string]any{"commands": r.v.Flaky})
 		d.notify(fmt.Sprintf("swarm %s: flaky gate command on T%d (failed, then passed on rerun): %s",

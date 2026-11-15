@@ -130,6 +130,7 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	d.Board.IssueFixed(op, board.Identity{Role: "lead"})
 	d.Board.Locate = d.locate
 	d.Board.Notify = d.notify
+	d.Board.Strict = d.Cfg.Strict()
 	keepAwake()
 	d.Board.Repo = d.repo
 	d.Board.Providers = func(ctx context.Context) (any, error) { return ProviderViews(ctx, d.Cfg, d.DB) }

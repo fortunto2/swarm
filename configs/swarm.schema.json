@@ -39,6 +39,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "safety": {
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -239,6 +242,15 @@
             }
           },
           "roles": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "tools": {
             "type": [
               "null",
               "array"

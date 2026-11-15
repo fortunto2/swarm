@@ -36,6 +36,7 @@ type Attempt struct {
 	Slot     int            // the worker's slot: its port range and anything else that must not collide
 	Deny     []string       // absolute paths the worker may neither read nor edit (state, accounts, keys)
 	Sandbox  config.Sandbox // OS confinement of the worker's Bash and its children
+	Strict   bool           // safety = strict: the worker is treated as untrusted
 }
 
 // WorkerSettings: the --settings JSON of a worker.
@@ -60,13 +61,13 @@ func WorkerSettings(a Attempt) string {
 	for _, p := range a.Deny {
 		add(p, "Read", "Edit", "Write", "Glob", "Grep")
 	}
-	if a.Worktree != "" {
+	if a.Strict && a.Worktree != "" {
 		for _, f := range []string{".claude", ".mcp.json", "CLAUDE.md", "AGENTS.md", ".git"} {
 			add(filepath.Join(a.Worktree, f), "Edit", "Write")
 		}
 	}
 	settings := map[string]any{"permissions": map[string]any{"deny": rules}}
-	if a.Sandbox.On() {
+	if a.Sandbox.On(a.Strict) {
 		domains := a.Sandbox.AllowedDomains
 		if domains == nil {
 			domains = []string{}
@@ -99,8 +100,13 @@ func AllowedTools(a Attempt, extra []string) []string {
 		"Bash(swarm gate:*)", "Bash(swarm board:*)",
 		"Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(git rev-parse:*)"}
 	var derived []string
-	for name := range a.ExtraMCP {
-		derived = append(derived, "mcp__"+name+"__*")
+	for name, m := range a.ExtraMCP { // the tools listed for the server; all of them if none listed
+		if len(m.Tools) == 0 {
+			derived = append(derived, "mcp__"+name+"__*")
+		}
+		for _, tool := range m.Tools {
+			derived = append(derived, "mcp__"+name+"__"+tool)
+		}
 	}
 	seen := map[string]bool{}
 	for _, g := range a.Gate {
@@ -216,8 +222,15 @@ func (c claude) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
 		"--allowedTools", strings.Join(AllowedTools(a, c.p.AllowedTools), ","),
 		"--permission-mode", "acceptEdits"}
 	args = append(args, "--settings", WorkerSettings(a))
-	if c.p.SettingSources != "" {
-		args = append(args, "--setting-sources", c.p.SettingSources)
+	// Settings come from the operator's user level only by default: their hooks and skills
+	// help; the worked-on repo's .claude/ settings could widen the worker (permissions,
+	// hooks run outside the sandbox) and are not trusted unless the provider says so.
+	sources := c.p.SettingSources
+	if sources == "" && a.Strict {
+		sources = "user"
+	}
+	if sources != "" {
+		args = append(args, "--setting-sources", sources)
 	}
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
@@ -274,7 +287,11 @@ func baseCmd(ctx context.Context, name string, args []string, a Attempt, p confi
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = a.Worktree
-	cmd.Env = append(append(CleanEnv(), env...), SwarmEnv(a)...)
+	base := envx.Clean() // trusted: drop accounts and billing routes only
+	if a.Strict {
+		base = envx.Minimal() // strict: an allowlist, unusual credential names included
+	}
+	cmd.Env = append(append(base, env...), SwarmEnv(a)...)
 	return cmd, nil
 }
 

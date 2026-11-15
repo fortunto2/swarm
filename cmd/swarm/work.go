@@ -57,6 +57,9 @@ func taskCmd() *cobra.Command {
 				return err
 			}
 			if !viaDaemon {
+				if len(files) == 0 {
+					files = in.Files
+				}
 				d, err := db.Open(c.DBPath())
 				if err != nil {
 					return err
@@ -279,7 +282,10 @@ func addViaDaemon(c *config.Config, in board.AddTaskIn) (run, id int64, viaDaemo
 			return 0, 0, false, errors.New("title, spec and acceptance must not be empty")
 		}
 		if len(in.Files) == 0 {
-			return 0, 0, false, errors.New(`--files is required (dir/ for a directory, "**" for the whole repo)`)
+			if c.Strict() {
+				return 0, 0, false, errors.New(`--files is required (dir/ for a directory, "**" for the whole repo)`)
+			}
+			in.Files = []string{"**"}
 		}
 		return in.Run, 0, false, nil
 	}

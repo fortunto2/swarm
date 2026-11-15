@@ -21,11 +21,12 @@ import (
 )
 
 type Verdict struct {
-	OK     bool
-	Stage  string   // "static" | "gate"
-	Reason string   // short, for the event log
-	Tail   string   // last 4K of the failing output, for the next attempt
-	Flaky  []string // commands that failed, then passed on a rerun
+	OK       bool
+	Stage    string   // "static" | "gate"
+	Reason   string   // short, for the event log
+	Tail     string   // last 4K of the failing output, for the next attempt
+	Flaky    []string // commands that failed, then passed on a rerun
+	Warnings []string // trusted profiles: what strict would have failed, for a person to read
 }
 
 const tailBytes = 4096
@@ -45,9 +46,9 @@ func tail(s string) string { return Tail(s, tailBytes) }
 var testFile = regexp.MustCompile(`(?i)(^|/)(` +
 	`test_[^/]*\.py|[^/]*_test\.(go|py)|conftest\.py|pytest\.ini|` + // Go, Python
 	`[^/]*\.(test|spec)\.[cm]?[jt]sx?|__tests__/.*|(jest|vitest|karma)\.config\.[^/]*|` + // JS/TS
-	`[^/]*Tests?\.(java|kt|swift)|` + // JUnit, Kotlin, XCTest
+	`[^/]*(Tests?|Spec)\.(java|kt|swift)|__snapshots__/.*|[^/]*\.snap$|` + // JUnit, Kotlin, XCTest, snapshots
 	`[^/]*_spec\.rb|` + // RSpec
-	`tests?/.*|spec/.*)$`)
+	`tests?/.*|spec/.*|e2e/.*|cypress/.*)$`)
 
 // Added lines that switch a test off or narrow a run to a few tests. Language-agnostic on
 // purpose: a false alarm costs a retry, a silent skip costs a merged lie.
@@ -85,8 +86,9 @@ const AllowProtectedMarker = "[allow-protected]"
 
 var allowProtected = regexp.MustCompile(`(?m)^\s*\[allow-protected\]\s*$`)
 
-// Grants: what a task's spec explicitly allows beyond its claims.
-type Grants struct{ Tests, Protected bool }
+// Grants: what a task's spec explicitly allows beyond its claims, and the profile's level.
+// Strict makes protected paths and shrinking tests fail; trusted reports them as warnings.
+type Grants struct{ Tests, Protected, Strict bool }
 
 func GrantsFrom(spec string) Grants {
 	return Grants{Tests: AllowsTestChanges(spec), Protected: allowProtected.MatchString(spec)}
@@ -95,8 +97,12 @@ func GrantsFrom(spec string) Grants {
 // protected: paths that configure agents, CI or git itself. A change there runs in every
 // later worker, in CI and in the operator's own sessions, so it needs an explicit grant
 // even when claimed.
-var protected = regexp.MustCompile(`(?i)(^|/)(\.claude/|\.mcp\.json$|CLAUDE\.md$|AGENTS\.md$|\.github/|` +
-	`\.gitlab-ci|\.gitattributes$|\.gitmodules$|\.lfsconfig$|\.git/|\.husky/|\.pre-commit-config)`)
+var protected = regexp.MustCompile(`(?i)(^|/)(` +
+	`\.claude/|\.mcp\.json$|CLAUDE(\.local)?\.md$|AGENTS(\.override)?\.md$|GEMINI\.md$|\.cursor/|\.codex/|` + // agents
+	`\.github/|\.gitlab-ci|\.circleci/|Jenkinsfile$|azure-pipelines\.ya?ml$|` + // CI
+	`\.gitattributes$|\.gitmodules$|\.lfsconfig$|\.git/|\.githooks/|\.husky/|\.pre-commit-config|lefthook\.ya?ml$|` + // git
+	`\.envrc$|\.cargo/config|\.npmrc$|\.yarnrc|\.mise\.toml$|\.tool-versions$|` + // run in the operator's shell or toolchain
+	`\.vscode/|\.devcontainer/|\.idea/)`)
 
 // Static checks run without a model: the change stays inside the task's files, and no test
 // is deleted or switched off unless the spec allows it. The change is measured against
@@ -131,18 +137,22 @@ func Static(ctx context.Context, wt, main, commit string, claims []string, g Gra
 		return Verdict{Stage: "static", Reason: "files outside the task's claims",
 			Tail: "changed but not owned (claim them first): " + strings.Join(outside, ", ")}
 	}
+	var warn []string
 	if len(guarded) > 0 && !g.Protected {
-		return Verdict{Stage: "static", Reason: "protected paths changed",
-			Tail: "these configure agents, CI or git and need [allow-protected] in the spec: " + strings.Join(guarded, ", ")}
+		msg := "these configure agents, CI or git and need [allow-protected] in the spec: " + strings.Join(guarded, ", ")
+		if g.Strict {
+			return Verdict{Stage: "static", Reason: "protected paths changed", Tail: msg}
+		}
+		warn = append(warn, msg)
 	}
 	if g.Tests || len(tests) == 0 {
-		return Verdict{OK: true, Stage: "static"}
+		return Verdict{OK: true, Stage: "static", Warnings: warn}
 	}
 	if len(deletedTests) > 0 {
 		return Verdict{Stage: "static", Reason: "tests deleted", Tail: "deleted: " + strings.Join(deletedTests, ", ")}
 	}
 	// only test files are searched: `model.fit(` or os.Exit in app code is fine
-	diff, err := gitx.Run(ctx, wt, append([]string{"diff", "-U0", main + "..." + commit, "--"}, tests...)...)
+	diff, err := gitx.Run(ctx, wt, append([]string{"diff", "--no-ext-diff", "--no-textconv", "-U0", main + "..." + commit, "--"}, tests...)...)
 	if err != nil {
 		return Verdict{Stage: "static", Reason: "diff failed", Tail: err.Error()}
 	}
@@ -150,16 +160,19 @@ func Static(ctx context.Context, wt, main, commit string, claims []string, g Gra
 		return Verdict{Stage: "static", Reason: "a test was switched off", Tail: "added: " + strings.TrimSpace(m)}
 	}
 	if shrunk := shrunkTests(ctx, wt, main, commit, files, tests); len(shrunk) > 0 {
-		return Verdict{Stage: "static", Reason: "existing tests shrank",
-			Tail: "more lines removed than added (assertions dropped?): " + strings.Join(shrunk, ", ")}
+		msg := "more lines removed than added (assertions dropped?): " + strings.Join(shrunk, ", ")
+		if g.Strict {
+			return Verdict{Stage: "static", Reason: "existing tests shrank", Tail: msg}
+		}
+		warn = append(warn, msg)
 	}
-	return Verdict{OK: true, Stage: "static"}
+	return Verdict{OK: true, Stage: "static", Warnings: warn}
 }
 
 // shrunkTests: existing test files (modified, not new) with more lines removed than added.
 // A rewrite that legitimately shortens a suite says so with [allow-test-changes].
 func shrunkTests(ctx context.Context, wt, main, commit string, files map[string]string, tests []string) []string {
-	out, err := gitx.Run(ctx, wt, append([]string{"diff", "--numstat", "-z", main + "..." + commit, "--"}, tests...)...)
+	out, err := gitx.Run(ctx, wt, append([]string{"diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z", main + "..." + commit, "--"}, tests...)...)
 	if err != nil {
 		return nil
 	}
@@ -229,7 +242,7 @@ func runOne(ctx context.Context, wt, c string, timeout time.Duration) Verdict {
 	var out bytes.Buffer
 	cmd := exec.CommandContext(ctx, "sh", "-c", c)
 	cmd.Dir = wt
-	cmd.Env = envx.Clean() // the gate runs the worker's code: it gets no credentials either
+	cmd.Env = envx.Minimal() // the gate runs the worker's code: it gets no credentials either
 	cmd.Stdout, cmd.Stderr = &out, &out
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }

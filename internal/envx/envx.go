@@ -40,3 +40,34 @@ func Clean() []string {
 	}
 	return out
 }
+
+// keepExact and keepPrefix: what a worker or gate needs to run toolchains, nothing else.
+// An allowlist: a credential with an unusual name (NPM_TOKEN, STRIPE_KEY, DATABASE_URL) is
+// simply not in it.
+var keepExact = map[string]bool{
+	"PATH": true, "HOME": true, "USER": true, "LOGNAME": true, "SHELL": true, "TERM": true,
+	"LANG": true, "TMPDIR": true, "TZ": true, "PWD": true, "COLORTERM": true,
+	"HTTP_PROXY": true, "HTTPS_PROXY": true, "NO_PROXY": true, "http_proxy": true, "https_proxy": true, "no_proxy": true,
+	"SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "NODE_EXTRA_CA_CERTS": true,
+}
+
+var keepPrefix = []string{"LC_", "XDG_", "GO", "CGO_", "RUSTUP_", "JAVA_", "PYTHON", "VIRTUAL_ENV", "NVM_", "NODE_OPTIONS", "DEVELOPER_DIR", "SDKROOT"}
+
+// Minimal is os.Environ() reduced to the allowlist.
+func Minimal() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if Dropped(k) {
+			continue
+		}
+		keep := keepExact[k]
+		for _, p := range keepPrefix {
+			keep = keep || strings.HasPrefix(k, p)
+		}
+		if keep {
+			out = append(out, kv)
+		}
+	}
+	return out
+}

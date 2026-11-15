@@ -28,9 +28,12 @@ func TestParseResultTakesTheLastResult(t *testing.T) {
 
 func TestAllowedToolsNoPush(t *testing.T) {
 	a := Attempt{Gate: []string{"go vet ./...", "go test ./...", "make lint", "sh -c 'x'", "cd sub && cargo test", "CGO_ENABLED=0 go build ./...", "git diff --exit-code"},
-		ExtraMCP: map[string]config.MCPServer{"solograph": {Command: "x"}}}
+		ExtraMCP: map[string]config.MCPServer{"solograph": {Command: "x", Tools: []string{"symbol_search"}}}}
 	got := strings.Join(AllowedTools(a, []string{"Bash(npm ci:*)"}), " ")
-	for _, want := range []string{"mcp__board__*", "mcp__solograph__*", "Bash(go:*)", "Bash(make:*)", "Bash(npm ci:*)", "Bash(swarm gate:*)"} {
+	if strings.Contains(got, "mcp__solograph__*") {
+		t.Error("a whole extra server allowed although its tools are listed")
+	}
+	for _, want := range []string{"mcp__board__*", "mcp__solograph__symbol_search", "Bash(go:*)", "Bash(make:*)", "Bash(npm ci:*)", "Bash(swarm gate:*)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %s in %s", want, got)
 		}
@@ -94,7 +97,7 @@ func TestClaudeCommandPosture(t *testing.T) {
 	dir := t.TempDir()
 	a := Attempt{TaskID: 7, Worktree: "/wt/app--T7", Dir: dir, Prompt: "p", Model: "sonnet", Socket: "/s.sock",
 		Token: "secret-token", SwarmBin: "/bin/swarm", Gate: []string{"go test ./..."},
-		Deny: []string{"/state"}, Sandbox: config.Sandbox{AllowWrite: []string{"/cache"}, AllowedDomains: []string{"proxy.golang.org"}}}
+		Deny: []string{"/state"}, Sandbox: config.Sandbox{AllowWrite: []string{"/cache"}, AllowedDomains: []string{"proxy.golang.org"}}, Strict: true}
 	cmd, err := claude{p: config.Provider{Kind: "claude"}}.Command(context.Background(), a)
 	if err != nil {
 		t.Fatal(err)
@@ -185,5 +188,23 @@ func TestClassificationTable(t *testing.T) {
 	}
 	if ParseResult(res(false, "Please run /login was in the README")).AuthFailed {
 		t.Error("a successful run mentioning /login is not an auth failure")
+	}
+}
+
+// Trusted (the default): no OS sandbox, the CLI's own settings sources, credential paths
+// still denied for Claude's tools.
+func TestClaudeCommandTrusted(t *testing.T) {
+	a := Attempt{TaskID: 1, Worktree: "/wt/x", Dir: t.TempDir(), Prompt: "p", Socket: "/s", Token: "t",
+		SwarmBin: "/bin/swarm", Deny: []string{"/state"}}
+	cmd, err := claude{p: config.Provider{Kind: "claude"}}.Command(context.Background(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(cmd.Args, " ")
+	if strings.Contains(args, `"sandbox"`) || strings.Contains(args, "--setting-sources") {
+		t.Fatalf("trusted run got strict settings: %s", args)
+	}
+	if !strings.Contains(args, "Read(//state/**)") || strings.Contains(args, "Edit(//wt/x/CLAUDE.md)") {
+		t.Fatalf("trusted: credential paths denied, CLAUDE.md editable: %s", args)
 	}
 }

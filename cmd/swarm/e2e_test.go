@@ -232,6 +232,7 @@ func TestExtraMCPAndAfterMergeHook(t *testing.T) {
 command = "codeindex"
 args = ["serve"]
 roles = ["worker"]
+tools = ["search"]
 
 [hooks]
 after_merge = ["echo {repo} {task} > `+filepath.Join(marks, "hook")+`"]

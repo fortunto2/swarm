@@ -36,8 +36,13 @@ func TestWorkerTokenCannotUseSessionTools(t *testing.T) {
 	if _, err := s.AddTask(ctx, op, AddTaskIn{Repo: "r", Title: "t", Spec: "s"}); AsError(err).Code != "incomplete" {
 		t.Fatalf("task without acceptance accepted: %v", err)
 	}
+	s.Strict = true
 	if _, err := s.AddTask(ctx, op, AddTaskIn{Repo: "r", Title: "t", Spec: "s", Acceptance: "a"}); AsError(err).Code != "no_files" {
-		t.Fatalf("task without files accepted: %v", err)
+		t.Fatalf("strict: task without files accepted: %v", err)
+	}
+	s.Strict = false
+	if _, err := s.AddTask(ctx, op, AddTaskIn{Repo: "r", Title: "t", Spec: "s", Acceptance: "a"}); err != nil {
+		t.Fatalf("trusted: a task without files takes the whole repo: %v", err)
 	}
 }
 

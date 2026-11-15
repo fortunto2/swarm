@@ -15,7 +15,9 @@ import (
 // the main .git), so nothing configured there may execute: no hooks, no fsmonitor, no LFS
 // filters, no network transport. -c on the command line overrides the repo's config.
 var hardened = []string{
-	"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+	"--literal-pathspecs", // a file named [a]_test.go or :(exclude)x is a path, not a pattern
+	"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null",
+	"-c", "diff.external=", "-c", "core.pager=cat",
 	"-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=", "-c", "filter.lfs.required=false",
 	"-c", "protocol.allow=never",
 }
@@ -26,7 +28,7 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", full...)
 	// LC_ALL=C: messages are parsed. The committer is swarm: the daemon commits only by
 	// rebasing, and must not depend on the operator's git identity being configured.
-	cmd.Env = append(envx.Clean(), "GIT_LFS_SKIP_SMUDGE=1", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C",
+	cmd.Env = append(envx.Clean(), "GIT_LFS_SKIP_SMUDGE=1", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_COMMITTER_NAME=swarm", "GIT_COMMITTER_EMAIL=swarm@local")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -52,7 +54,7 @@ func IsAncestor(ctx context.Context, dir, a, b string) bool {
 func ChangedFiles(ctx context.Context, dir, upstream, to string) (map[string]string, error) {
 	// -z: paths come raw, NUL-separated; without it git quotes non-ASCII names and a
 	// deleted "tests/é_test.go" would match nothing.
-	out, err := Run(ctx, dir, "diff", "--name-status", "--no-renames", "-z", upstream+"..."+to)
+	out, err := Run(ctx, dir, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "--no-renames", "-z", upstream+"..."+to)
 	if err != nil {
 		return nil, err
 	}

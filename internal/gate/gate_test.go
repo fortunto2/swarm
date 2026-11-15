@@ -86,7 +86,7 @@ func TestStatic(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			d, base := repo(t)
 			c.change(d)
-			v := Static(ctx, d, base, commit(t, d), c.claims, Grants{})
+			v := Static(ctx, d, base, commit(t, d), c.claims, Grants{Strict: true})
 			if v.OK != c.ok {
 				t.Fatalf("ok=%v want %v: %s %s", v.OK, c.ok, v.Reason, v.Tail)
 			}
@@ -230,8 +230,11 @@ func TestGrants(t *testing.T) {
 	d2, base2 := repo(t)
 	write(t, d2, ".claude/settings.json", "{}")
 	c2 := commit(t, d2)
-	if v := Static(ctx, d2, base2, c2, []string{"**"}, Grants{Tests: true}); v.OK {
+	if v := Static(ctx, d2, base2, c2, []string{"**"}, Grants{Tests: true, Strict: true}); v.OK {
 		t.Fatal("a test grant opened protected paths")
+	}
+	if v := Static(ctx, d2, base2, c2, []string{"**"}, Grants{}); !v.OK || len(v.Warnings) != 1 {
+		t.Fatalf("trusted: a protected path is a warning, not a failure: %+v", v)
 	}
 	if v := Static(ctx, d2, base2, c2, []string{"**"}, Grants{Protected: true}); !v.OK {
 		t.Fatalf("protected grant: %+v", v)

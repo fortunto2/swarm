@@ -39,7 +39,12 @@ type Profile struct {
 	Harness      string   `toml:"harness" json:"harness,omitempty"`             // harness-core profile dir, for runs.jsonl
 	SecretCmd    []string `toml:"secret_cmd" json:"secret_cmd,omitempty"`       // resolves secret:<name>: argv + name, value on stdout
 	ProjectRules string   `toml:"project_rules" json:"project_rules,omitempty"`
-	DenyPaths    []string `toml:"deny_paths" json:"deny_paths,omitempty"` // extra paths workers may not read or edit // file appended to every worker prompt (prompts/project.md)
+	DenyPaths    []string `toml:"deny_paths" json:"deny_paths,omitempty"` // extra paths workers may not read or edit
+	// Safety: "trusted" (default) guards against mistakes at no cost to the work: the gate,
+	// claims, test checks, credential paths denied. "strict" also treats the worker as
+	// untrusted: OS sandbox, user-level settings only, env allowlist, explicit MCP tools,
+	// protected paths and shrinking tests fail the gate, files required on every task.
+	Safety string `toml:"safety" json:"safety,omitempty"` // file appended to every worker prompt (prompts/project.md)
 }
 
 type Repo struct {
@@ -98,6 +103,9 @@ type MCPServer struct {
 	Args    []string          `toml:"args" json:"args,omitempty"`
 	Env     map[string]string `toml:"env" json:"env,omitempty"`
 	Roles   []string          `toml:"roles" json:"roles,omitempty"`
+	// Tools a worker may call on this server. Required for a server workers get: an MCP
+	// server runs outside the worker's sandbox, so its reach is its tool list.
+	Tools []string `toml:"tools" json:"tools,omitempty"`
 }
 
 // Hooks run after events, best effort: a failing hook is logged, never undoes a merge.
@@ -117,7 +125,13 @@ type Sandbox struct {
 	AllowedDomains []string `toml:"allowed_domains" json:"allowed_domains,omitempty"`
 }
 
-func (s Sandbox) On() bool { return s.Enabled == nil || *s.Enabled }
+// On: the sandbox runs if the profile says so, else if safety is strict.
+func (s Sandbox) On(strict bool) bool {
+	if s.Enabled != nil {
+		return *s.Enabled
+	}
+	return strict
+}
 
 type Config struct {
 	Dir       string               `toml:"-" json:"-"` // the profile directory this file was read from
@@ -227,6 +241,9 @@ func (c *Config) Validate() error {
 	if c.Profile.Name == "" {
 		bad("profile.name is required")
 	}
+	if c.Profile.Safety != "" && c.Profile.Safety != "trusted" && c.Profile.Safety != "strict" {
+		bad("profile.safety = %q, want trusted or strict", c.Profile.Safety)
+	}
 	if c.Profile.WorktreeRoot == "" {
 		bad("profile.worktree_root is required (outside every repo)")
 	}
@@ -309,6 +326,9 @@ func (c *Config) Validate() error {
 		}
 		if m.Command == "" {
 			bad("mcp.%s.command is required", n)
+		}
+		if c.Strict() && (len(m.Roles) == 0 || slices.Contains(m.Roles, "worker")) && len(m.Tools) == 0 {
+			bad("mcp.%s.tools is required for a server workers get (it runs outside their sandbox)", n)
 		}
 		for _, r := range m.Roles {
 			if r != "worker" && r != "lead" {
@@ -432,3 +452,6 @@ func (c *Config) WorkerDeny() []string {
 	slices.Sort(out)
 	return slices.Compact(out)
 }
+
+// Strict: the profile treats workers as untrusted (see Profile.Safety).
+func (c *Config) Strict() bool { return c.Profile.Safety == "strict" }
