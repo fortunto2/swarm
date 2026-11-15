@@ -113,7 +113,7 @@ func taskCmd() *cobra.Command {
 		_ = add.MarkFlagRequired(n)
 	}
 	t := &cobra.Command{Use: "task", Short: "Tasks"}
-	t.AddCommand(add, taskListCmd(), taskNotesCmd(), taskOp("retry", "swarm_retry_task", "Give a blocked task a fresh start"),
+	t.AddCommand(add, taskListCmd(), taskNotesCmd(), taskClaimCmd(), taskOp("retry", "swarm_retry_task", "Give a blocked task a fresh start"),
 		taskOp("cancel", "swarm_cancel_task", "Cancel a task; a running worker is stopped"))
 	return t
 }
@@ -432,3 +432,37 @@ func (d days) String() string {
 }
 
 func (d days) Type() string { return "duration" }
+
+// taskClaimCmd: swarm task claim <id> <path>... (swarm_claim_files from a terminal).
+func taskClaimCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "claim <task-id> <path>...",
+		Short: "Let a task also write these files (a worker blocked asking for one), then retry it (needs the daemon running)",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, a []string) error {
+			id, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimPrefix(a[0], "T"), "t"), 10, 64)
+			if err != nil {
+				return fmt.Errorf("task id: %w", err)
+			}
+			c, err := load()
+			if err != nil {
+				return err
+			}
+			cl, err := board.Dial(dispatch.SocketPath(c.StatePath()))
+			if err != nil {
+				return fmt.Errorf("start the daemon first (swarm daemon): %w", err)
+			}
+			defer cl.Close()
+			tok, err := board.OperatorToken(c.StatePath())
+			if err != nil {
+				return err
+			}
+			res, err := cl.Do("swarm_claim_files", tok, map[string]any{"task_id": id, "files": a[1:]})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(res))
+			return nil
+		},
+	}
+}

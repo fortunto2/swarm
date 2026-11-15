@@ -40,6 +40,11 @@ func hide(o op) op { o.hidden = true; return o }
 
 type empty struct{}
 
+type claimIn struct {
+	TaskID int64    `json:"task_id"`
+	Files  []string `json:"files" jsonschema:"paths or dir/ prefixes, as in swarm_add_task"`
+}
+
 type drainIn struct {
 	Cancel bool `json:"cancel,omitempty"`
 }
@@ -126,6 +131,10 @@ var ops = []op{
 		func(s *Service, ctx context.Context, tok string, in NodeReport) (any, error) {
 			return ok, s.NodeReport(ctx, tok, in)
 		})),
+	def("swarm_claim_files", "lead", "Let a task also write these files (a worker blocked asking for one: a test that asserts the old behaviour, a file the change must touch). Then swarm_retry_task.",
+		func(s *Service, ctx context.Context, tok string, in claimIn) (any, error) {
+			return s.ClaimFiles(ctx, tok, in.TaskID, in.Files)
+		}),
 	def("swarm_task_notes", "lead", "Why a task is where it is: gate failures, worker plans and questions, newest first.",
 		func(s *Service, ctx context.Context, tok string, in notesIn) (any, error) {
 			return s.TaskNotes(ctx, tok, in.TaskID)

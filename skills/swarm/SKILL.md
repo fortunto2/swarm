@@ -113,6 +113,10 @@ sqlite3 "$SWARM_PROFILE/state/swarm.db" \
 
 The fix is almost always in the task, not in the worker: a spec that named no files, an
 acceptance the gate cannot see, a task too big. Rewrite it and add it again, or split it.
+The most common question is a file outside the task's claims: a test that asserts the very
+behaviour the task changes. When the worker is right, widen the task instead of rewriting
+it: `swarm task claim <id> <path>` (MCP `swarm_claim_files`), then `swarm task retry <id>`.
+Name such tests in `--files` up front next time: the spec changes them, so the task owns them.
 Attempt logs: `$SWARM_PROFILE/state/attempts/<provider>-T<id>-<n>/log.jsonl`.
 
 ## Rules

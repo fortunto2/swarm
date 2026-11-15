@@ -116,3 +116,38 @@ func TestSocketCapsAConnection(t *testing.T) {
 		t.Fatalf("daemon not answering after the flood: %v", err)
 	}
 }
+
+// A lead widens a blocked task's files (a test asserting the old behaviour, outside the
+// claims); a finished task is not widened.
+func TestClaimFilesWidensATaskNotAFinishedOne(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	s := &Service{DB: d}
+	lead := s.Issue(Identity{Role: "lead"})
+	run, _ := d.CreateRun(ctx, "x", "", "base")
+	id, _ := d.AddTask(ctx, db.NewTask{RunID: run, Repo: "app", Title: "T", Spec: "s", Acceptance: "a", Tier: "B", Files: []string{"a.go"}})
+	out, err := s.ClaimFiles(ctx, lead, id, []string{"a_test.go", " ", "a.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.WriteClaims(ctx, id); len(got) != 2 || got[0] != "a.go" || got[1] != "a_test.go" {
+		t.Fatalf("claims after widening: %v (%v)", got, out)
+	}
+	if _, err := s.ClaimFiles(ctx, lead, id, nil); AsError(err).Code != "bad_input" {
+		t.Fatalf("no files: %v", err)
+	}
+	if err := d.Move(ctx, "t", id, []db.Status{db.Ready}, db.Cancelled, db.Patch{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimFiles(ctx, lead, id, []string{"b.go"}); AsError(err).Code != "finished" {
+		t.Fatalf("a cancelled task was widened: %v", err)
+	}
+	worker := s.Issue(Identity{TaskID: id, Role: "worker"})
+	if _, err := s.Do(ctx, "swarm_claim_files", worker, []byte(`{"task_id":1,"files":["x"]}`)); AsError(err).Code != "forbidden" {
+		t.Fatalf("a worker widened its own claims: %v", err)
+	}
+}

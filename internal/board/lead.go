@@ -201,3 +201,39 @@ func (s *Service) CancelTask(ctx context.Context, tok string, task int64) (any, 
 	s.signal(task)
 	return map[string]any{"task": task, "status": "cancelled"}, nil
 }
+
+// ClaimFiles widens what a task may write. Two of the first six tasks on nodes blocked on
+// exactly this: a test that asserted the behaviour the task was asked to change, outside the
+// task's files; the only way out was a new task.
+func (s *Service) ClaimFiles(ctx context.Context, tok string, task int64, files []string) (any, error) {
+	id, err := s.lead(tok)
+	if err != nil {
+		return nil, err
+	}
+	var clean []string
+	for _, f := range files {
+		if f = strings.TrimSpace(f); f != "" {
+			clean = append(clean, f)
+		}
+	}
+	if len(clean) == 0 {
+		return nil, &Error{"bad_input", "files: one or more paths or dir/ prefixes"}
+	}
+	t, err := s.DB.GetTask(ctx, task)
+	if err != nil {
+		return nil, &Error{"no_task", fmt.Sprintf("no task %d", task)}
+	}
+	if t.Status == db.Merged || t.Status == db.Cancelled {
+		return nil, &Error{"finished", "task is " + string(t.Status) + "; add a new one instead"}
+	}
+	if err := s.DB.AddClaims(ctx, task, clean); err != nil {
+		return nil, err
+	}
+	s.DB.Event(ctx, id.Actor(), task, "files_claimed", map[string]any{"files": clean})
+	all, _ := s.DB.WriteClaims(ctx, task)
+	hint := "the next attempt may write them"
+	if t.Status == db.Blocked || t.Status == db.NeedsHuman {
+		hint = "now retry it: swarm_retry_task"
+	}
+	return map[string]any{"task": task, "files": all, "next": hint}, nil
+}

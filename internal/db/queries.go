@@ -708,3 +708,14 @@ func (d *DB) Nodes(ctx context.Context) ([]NodeRow, error) {
 	}
 	return out, rows.Err()
 }
+
+// AddClaims widens a task's write claims (the lead answering "may I also change this
+// file"); the next attempt's prompt and its gate read the new set.
+func (d *DB) AddClaims(ctx context.Context, taskID int64, files []string) error {
+	for _, f := range files {
+		if _, err := d.ExecContext(ctx, `INSERT OR IGNORE INTO file_claims(path, task_id, mode) VALUES(?, ?, 'write')`, f, taskID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
