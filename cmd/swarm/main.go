@@ -156,6 +156,7 @@ func main() {
 			return nil
 		},
 	})
+	root.AddCommand(reportCmd())
 	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd())
 
 	if err := root.Execute(); err != nil {

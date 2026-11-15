@@ -127,6 +127,9 @@ func (d *DB) Move(ctx context.Context, actor string, id int64, from []Status, to
 		return ErrStale
 	}
 	d.Event(ctx, actor, id, "status", map[string]string{"to": string(to)})
+	if d.OnMove != nil {
+		d.OnMove(id, to)
+	}
 	return nil
 }
 

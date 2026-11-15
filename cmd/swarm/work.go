@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -170,10 +173,7 @@ func mcpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cl, err := board.Dial(dispatch.SocketPath(c.StatePath()))
-			if err != nil {
-				return fmt.Errorf("swarmd is not running for profile %s: start `swarm daemon` (%w)", c.Profile.Name, err)
-			}
+			cl := board.Lazy(dispatch.SocketPath(c.StatePath())) // up even while the daemon is down
 			defer cl.Close()
 			return board.NewMCP(cl, op, "lead").Run(context.Background(), &mcp.StdioTransport{})
 		},
@@ -335,4 +335,54 @@ func taskOp(use, op, short string) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// reportCmd: what a period of work says (PRD §11), for a person or a reflection pass.
+func reportCmd() *cobra.Command {
+	var since time.Duration
+	var asJSON bool
+	c := &cobra.Command{
+		Use:   "report",
+		Short: "Per provider: attempts, outcomes, cost; merged and first-try; why gates failed; what is blocked",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := load()
+			if err != nil {
+				return err
+			}
+			d, err := db.Open(c.DBPath())
+			if err != nil {
+				return err
+			}
+			defer d.Close()
+			r, err := d.Report(context.Background(), time.Now().Add(-since).Unix())
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if asJSON {
+				b, _ := json.MarshalIndent(r, "", "  ")
+				fmt.Fprintln(out, string(b))
+				return nil
+			}
+			fmt.Fprintf(out, "last %s: %d merged, %d on the first try\n", since, r.Merged, r.FirstTry)
+			for _, p := range r.Providers {
+				fmt.Fprintf(out, "  %-14s %3d attempts: %d done, %d gate_fail, %d timeout, %d crash, %d blocked; $%.2f\n",
+					p.Provider, p.Attempts, p.Done, p.GateFail, p.Timeout, p.Crash, p.Blocked, p.CostUSD)
+			}
+			for _, g := range r.GateFails {
+				fmt.Fprintf(out, "  gate failed %dx: %s\n", g.N, g.What)
+			}
+			for _, b := range r.Blocked {
+				fmt.Fprintf(out, "  blocked T%d %q: %s\n", b.ID, b.Title, strings.ReplaceAll(b.LastNote, "\n", " "))
+			}
+			for _, k := range slices.Sorted(maps.Keys(r.Signals)) {
+				fmt.Fprintf(out, "  %s: %d\n", k, r.Signals[k])
+			}
+			return nil
+		},
+	}
+	c.Flags().DurationVar(&since, "since", 7*24*time.Hour, "period to report on")
+	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable")
+	return c
 }

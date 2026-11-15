@@ -31,7 +31,12 @@ var migrations = []string{
 	`ALTER TABLE attempts ADD COLUMN pid INTEGER;`,
 }
 
-type DB struct{ *sql.DB }
+type DB struct {
+	*sql.DB
+	// OnMove, when set, hears every committed status transition (hooks, a board view).
+	// Called synchronously after the write: keep it quick, hand slow work off.
+	OnMove func(id int64, to Status)
+}
 
 // Open applies the PRD §5 connection settings to every pooled connection and migrates.
 func Open(path string) (*DB, error) {
@@ -51,7 +56,7 @@ func Open(path string) (*DB, error) {
 		sdb.Close()
 		return nil, err
 	}
-	return &DB{sdb}, nil
+	return &DB{DB: sdb}, nil
 }
 
 func migrate(sdb *sql.DB, steps []string) error {

@@ -291,8 +291,12 @@ func TestSessionMCPQueuesAndWatches(t *testing.T) {
 		cl := mcp.NewClient(&mcp.Implementation{Name: "test-session", Version: "0"}, nil)
 		cs, err = cl.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(bin, "--profile", prof, "mcp")}, nil)
 		if err == nil {
-			if _, err = cs.CallTool(ctx, &mcp.CallToolParams{Name: "swarm_status"}); err == nil {
+			var res *mcp.CallToolResult
+			if res, err = cs.CallTool(ctx, &mcp.CallToolParams{Name: "swarm_status"}); err == nil && !res.IsError {
 				break
+			}
+			if err == nil {
+				err = fmt.Errorf("daemon not up yet")
 			}
 			cs.Close()
 		}
@@ -816,5 +820,45 @@ func TestRedactionFilter(t *testing.T) {
 	}
 	if !strings.Contains(string(dump), "[REDACTED]") || !strings.Contains(string(sent), "[REDACTED]") {
 		t.Fatalf("nothing was redacted (the filter did not run):\n%s\n%s", dump, sent)
+	}
+}
+
+// on_status mirrors every transition (the hook a board like Orca listens on), and report
+// counts what happened.
+func TestStatusHookAndReport(t *testing.T) {
+	repo := testbed(t)
+	log := filepath.Join(t.TempDir(), "moves")
+	prof := profile(t, repo, goodWorker, 4, fmt.Sprintf("\n[hooks]\non_status = [\"echo {task} {status} >> %s\"]\n", log))
+	addTask(t, prof, "")
+	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	moves, _ := os.ReadFile(log)
+	for _, want := range []string{"1 running", "1 verifying", "1 merging", "1 merged"} {
+		if !strings.Contains(string(moves), want) {
+			t.Errorf("on_status missed %q:\n%s", want, moves)
+		}
+	}
+	out, err := swarm(t, prof, 30*time.Second, "report", "--json")
+	if err != nil || !strings.Contains(out, `"tasks_merged": 1`) || !strings.Contains(out, `"merged_first_try": 1`) {
+		t.Fatalf("report: %v\n%s", err, out)
+	}
+}
+
+// A session's MCP server starts with no daemon running and says so when called.
+func TestSessionMCPWithoutDaemon(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, goodWorker, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cl := mcp.NewClient(&mcp.Implementation{Name: "t", Version: "0"}, nil)
+	cs, err := cl.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(bin, "--profile", prof, "mcp")}, nil)
+	if err != nil {
+		t.Fatalf("the MCP server must start without a daemon: %v", err)
+	}
+	defer cs.Close()
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "swarm_status"})
+	if err != nil || !res.IsError || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, "daemon_down") {
+		t.Fatalf("want a daemon_down tool error, got %v %+v", err, res)
 	}
 }

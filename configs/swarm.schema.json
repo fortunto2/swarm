@@ -293,6 +293,15 @@
             "type": "string"
           }
         },
+        "on_status": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "timeout": {
           "type": "string",
           "description": "a Go duration: 90s, 15m, 1h30m",

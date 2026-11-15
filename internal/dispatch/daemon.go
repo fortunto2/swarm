@@ -133,6 +133,9 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	d.Board.IssueFixed(op, board.Identity{Role: "lead"})
 	d.Board.Locate = d.locate
 	d.Board.Notify = d.notify
+	if len(d.Cfg.Hooks.OnStatus) > 0 {
+		d.DB.OnMove = d.statusHook
+	}
 	d.Board.Redact = d.redact.Apply
 	d.Board.Strict = d.Cfg.Strict()
 	keepAwake()
@@ -421,4 +424,41 @@ func parseEtime(s string) (time.Duration, bool) {
 		secs = secs*60 + n
 	}
 	return time.Duration(days)*24*time.Hour + time.Duration(secs)*time.Second, true
+}
+
+// statusHook runs the profile's on_status commands for a transition, off the caller's
+// goroutine (moves happen on the loop and on board calls), awaited on exit like notify.
+func (d *Daemon) statusHook(id int64, to db.Status) {
+	t, err := d.DB.GetTask(context.Background(), id)
+	if err != nil {
+		return
+	}
+	wt := d.locate(t).Path
+	d.notifyMu.Lock()
+	if d.closing {
+		d.notifyMu.Unlock()
+		return
+	}
+	d.bg.Add(1)
+	d.notifyMu.Unlock()
+	go func() {
+		defer d.bg.Done()
+		r := strings.NewReplacer("{task}", strconv.FormatInt(id, 10), "{title}", shellSafe(t.Title),
+			"{status}", string(to), "{worktree}", wt, "{repo}", t.Repo)
+		for _, h := range d.Cfg.Hooks.OnStatus {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			_ = exec.CommandContext(ctx, "sh", "-c", r.Replace(h)).Run()
+			cancel()
+		}
+	}()
+}
+
+// shellSafe: a title goes into a shell command line; keep it to plain characters.
+func shellSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\'' || r == '"' || r == '`' || r == '$' || r == '\\' || r < ' ' {
+			return ' '
+		}
+		return r
+	}, s)
 }

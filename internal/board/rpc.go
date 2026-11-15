@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"os"
+	"sync"
 )
 
 // The daemon side: one RPC method on a unix socket, dispatching through the op table. Only
@@ -98,17 +99,30 @@ func (c *capped) Read(p []byte) (int, error) {
 }
 
 // Client is the caller side of the socket.
-type Client struct{ c *rpc.Client }
+type Client struct {
+	sock string
+	mu   sync.Mutex // guards c across concurrent MCP tool calls
+	c    *rpc.Client
+}
 
 func Dial(sock string) (*Client, error) {
 	c, err := jsonrpc.Dial("unix", sock)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{c}, nil
+	return &Client{sock: sock, c: c}, nil
 }
 
-func (c *Client) Close() error { return c.c.Close() }
+// Lazy: a client that connects on first use and reconnects after the daemon restarts. A
+// session's MCP server starts whether or not the daemon runs; a call says which.
+func Lazy(sock string) *Client { return &Client{sock: sock} }
+
+func (c *Client) Close() error {
+	if c.c == nil {
+		return nil
+	}
+	return c.c.Close()
+}
 
 // Do returns the result JSON, or the board error as a Go error. input may be any value
 // that marshals to the operation's input.
@@ -117,9 +131,26 @@ func (c *Client) Do(op, token string, input any) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var r Reply
-	if err := c.c.Call("Board.Do", Req{Op: op, Token: token, Input: raw}, &r); err != nil {
-		return nil, err
+	for try := 0; ; try++ {
+		if c.c == nil {
+			cl, err := jsonrpc.Dial("unix", c.sock)
+			if err != nil {
+				return nil, &Error{"daemon_down", "swarm daemon is not running for this profile: start it (swarm daemon)"}
+			}
+			c.c = cl
+		}
+		err := c.c.Call("Board.Do", Req{Op: op, Token: token, Input: raw}, &r)
+		if err == nil {
+			break
+		}
+		c.c.Close()
+		c.c = nil
+		if try > 0 {
+			return nil, err
+		}
 	}
 	if r.Err != nil {
 		return nil, r.Err

@@ -114,7 +114,10 @@ type MCPServer struct {
 // Placeholders: {repo} (name), {path} (repo path), {task}, {commit}.
 type Hooks struct {
 	AfterMerge []string `toml:"after_merge" json:"after_merge,omitempty"`
-	Timeout    Duration `toml:"timeout" json:"timeout,omitempty"`
+	// OnStatus runs on every status change of a task, e.g. to mirror tasks on a board.
+	// Placeholders: {task}, {title}, {status}, {worktree}, {repo}. Best effort, bounded.
+	OnStatus []string `toml:"on_status" json:"on_status,omitempty"`
+	Timeout  Duration `toml:"timeout" json:"timeout,omitempty"`
 }
 
 // Sandbox: how Claude Code confines a worker's Bash and every process it starts (Seatbelt

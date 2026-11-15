@@ -537,3 +537,100 @@ func (d *DB) ReopenRun(ctx context.Context, runID int64) error {
 	_, err := d.ExecContext(ctx, `UPDATE runs SET status='running' WHERE id=? AND status='done'`, runID)
 	return err
 }
+
+// Report: what a period of work says about the swarm, for a person or a reflection pass
+// to act on. Numbers only from what was recorded.
+type Report struct {
+	Since     int64            `json:"since"`
+	Providers []ProviderReport `json:"providers"`
+	Merged    int              `json:"tasks_merged"`
+	FirstTry  int              `json:"merged_first_try"`
+	GateFails []Count          `json:"gate_fail_reasons"`
+	Blocked   []BlockedTask    `json:"blocked_now"`
+	Signals   map[string]int   `json:"signals"` // flaky, warnings, refusals, rebase conflicts, ...
+}
+
+type ProviderReport struct {
+	Provider string  `json:"provider"`
+	Attempts int     `json:"attempts"`
+	Done     int     `json:"done"`
+	GateFail int     `json:"gate_fail"`
+	Timeout  int     `json:"timeout"`
+	Crash    int     `json:"crash"`
+	Blocked  int     `json:"blocked"`
+	CostUSD  float64 `json:"cost_usd"`
+}
+
+type Count struct {
+	What string `json:"what"`
+	N    int    `json:"n"`
+}
+
+type BlockedTask struct {
+	ID       int64  `json:"id"`
+	Title    string `json:"title"`
+	LastNote string `json:"last_note"`
+}
+
+func (d *DB) Report(ctx context.Context, since int64) (Report, error) {
+	r := Report{Since: since, Signals: map[string]int{}}
+	rows, err := d.QueryContext(ctx, `SELECT provider, count(*),
+		sum(outcome='done'), sum(outcome='gate_fail'), sum(outcome='timeout'), sum(outcome='crash'),
+		sum(outcome='blocked'), coalesce(sum(cost_usd),0)
+		FROM attempts WHERE started_at >= ? GROUP BY provider ORDER BY provider`, since)
+	if err != nil {
+		return r, err
+	}
+	for rows.Next() {
+		var p ProviderReport
+		if err := rows.Scan(&p.Provider, &p.Attempts, &p.Done, &p.GateFail, &p.Timeout, &p.Crash, &p.Blocked, &p.CostUSD); err != nil {
+			rows.Close()
+			return r, err
+		}
+		r.Providers = append(r.Providers, p)
+	}
+	rows.Close()
+	if err := d.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(t.attempts=0),0) FROM tasks t
+		WHERE t.status='merged' AND EXISTS (SELECT 1 FROM events e WHERE e.task_id=t.id AND e.type='merged' AND e.at >= ?)`,
+		since).Scan(&r.Merged, &r.FirstTry); err != nil {
+		return r, err
+	}
+	rows, err = d.QueryContext(ctx, `SELECT coalesce(json_extract(data,'$.reason'),'?'), count(*) FROM events
+		WHERE type='gate_fail' AND at >= ? GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, since)
+	if err != nil {
+		return r, err
+	}
+	for rows.Next() {
+		var c Count
+		if err := rows.Scan(&c.What, &c.N); err != nil {
+			rows.Close()
+			return r, err
+		}
+		r.GateFails = append(r.GateFails, c)
+	}
+	rows.Close()
+	rows, err = d.QueryContext(ctx, `SELECT t.id, t.title, coalesce((SELECT substr(body,1,300) FROM notes n
+		WHERE n.task_id=t.id ORDER BY n.id DESC LIMIT 1),'') FROM tasks t WHERE t.status='blocked' ORDER BY t.id`)
+	if err != nil {
+		return r, err
+	}
+	for rows.Next() {
+		var b BlockedTask
+		if err := rows.Scan(&b.ID, &b.Title, &b.LastNote); err != nil {
+			rows.Close()
+			return r, err
+		}
+		r.Blocked = append(r.Blocked, b)
+	}
+	rows.Close()
+	for _, typ := range []string{"gate_flaky", "gate_warning", "refused", "rebase_conflict", "infra_fail", "provider_cooling", "provider_disabled", "orphan_killed"} {
+		var n int
+		if err := d.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE type=? AND at >= ?`, typ, since).Scan(&n); err != nil {
+			return r, err
+		}
+		if n > 0 {
+			r.Signals[typ] = n
+		}
+	}
+	return r, nil
+}
