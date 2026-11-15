@@ -49,6 +49,13 @@ Found by reading the PRD section by section against the code. One was a shipped 
   diff held other tasks' merged files and the gate failed it for touching files it does not
   own; a task started after its dependency merged got a worktree without the dependency.
   Reproduced with a two-task test before fixing.
+- **Fixed later, the same hole under `merge = "branch"`:** "merged" there is a delivery
+  branch, so a dependent still started from a main without its dependency (found live: two
+  tasks on one file, the second conflicted at merge). `internal/taskbase` joins main with the
+  dependencies' deliveries; start, worker gate spec, gate and merge step all read it. Its
+  blind review found two bugs before it shipped: any git failure (exit 128, or 129 on a git
+  older than 2.38) was read as a conflict, and a conflict silently dropped main and the
+  earlier dependencies from the base. Now a conflict is exit code 1 only and blocks the task.
 
 ## Where the registry lives
 

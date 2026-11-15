@@ -269,7 +269,7 @@ func gateCmd() *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			if head, err := gitx.Head(ctx, dir, "HEAD"); err == nil && head != spec.Base {
-				if v := gate.Static(ctx, dir, spec.Base, head, spec.Files, gate.Grants{Tests: spec.AllowTests, Protected: spec.Protected}); !v.OK {
+				if v := gate.StaticFrom(ctx, dir, []string{spec.Base, spec.OwnBase}, head, spec.Files, gate.Grants{Tests: spec.AllowTests, Protected: spec.Protected}); !v.OK {
 					fmt.Fprintf(out, "gate: FAIL (%s) %s\n%s\n", v.Stage, v.Reason, v.Tail)
 					return errors.New("static checks failed")
 				}

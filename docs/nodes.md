@@ -130,3 +130,11 @@ holds the user's ssh keys can reach the coordinator the way the node does; give 
 
 One account on two machines (declare two providers, one per machine). A node offering
 repos the coordinator has no copy of. Transports other than a command's stdin/stdout.
+
+## Dependencies under merge = "branch"
+
+A task that needs others starts on main joined with their deliveries (`internal/taskbase`);
+the coordinator keeps that commit at `refs/swarm/base/T<id>-<sha12>` and the start order names
+it, so the node fetches it. A node older than this ignores the ref, fetches main, and fails
+such a start with "base ... is not on the coordinator's main": upgrade nodes with the
+coordinator (`swarm status` prints a node whose build differs).

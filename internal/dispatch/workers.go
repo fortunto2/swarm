@@ -15,10 +15,10 @@ import (
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/gate"
-	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/prompts"
 	"github.com/fortunto2/swarm/internal/provider"
 	"github.com/fortunto2/swarm/internal/shellx"
+	"github.com/fortunto2/swarm/internal/taskbase"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
@@ -157,8 +157,9 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapte
 		return fail(err)
 	}
 	// A new worktree starts from main as it is now, so a task sees everything merged before
-	// it (its dependencies first of all), and its diff is measured from there.
-	base, err := gitx.Head(ctx, r.Path, r.MainRef())
+	// it, plus its dependencies' deliveries where those are branches (taskbase), and its diff
+	// is measured from there.
+	base, _, err := taskbase.For(ctx, d.DB, r, t)
 	if err != nil {
 		return fail(err)
 	}
@@ -211,6 +212,10 @@ func (d *Daemon) applyStart(ctx context.Context, s started) {
 	delete(d.starting, s.taskID)
 	if s.err != nil {
 		d.Log.Error("start failed", "task", s.taskID, "err", s.err)
+		if errors.Is(s.err, taskbase.ErrConflict) { // no retry fixes it: a person lands the dependency
+			d.blockOnBase(ctx, s.taskID, db.Running, s.err)
+			return
+		}
 		d.fail(ctx, s.taskID, db.Running, infraFail, "crash", s.err.Error())
 		return
 	}

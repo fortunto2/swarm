@@ -483,13 +483,29 @@ func (n *Node) repo(name string) (config.Repo, board.RepoView, error) {
 
 // fetchMain makes the coordinator's main present here, as refs/swarm/main/<repo>.
 func (n *Node) fetchMain(ctx context.Context, name string) error {
-	r, v, err := n.repo(name)
+	_, v, err := n.repo(name)
+	if err != nil {
+		return err
+	}
+	return n.fetch(ctx, name, "+"+v.MainRef+":refs/swarm/main/"+name)
+}
+
+// fetchRef: a ref the coordinator keeps for one task (its joined base), to the same name here.
+func (n *Node) fetchRef(ctx context.Context, name, ref string) error {
+	if !strings.HasPrefix(ref, "refs/swarm/") {
+		return fmt.Errorf("ref %q is not swarm's", ref)
+	}
+	return n.fetch(ctx, name, "+"+ref+":"+ref)
+}
+
+func (n *Node) fetch(ctx context.Context, name, refspec string) error {
+	r, _, err := n.repo(name)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, transferLimit)
 	defer cancel()
-	_, err = gitx.Transfer(ctx, r.Path, "fetch", "--quiet", r.Remote, "+"+v.MainRef+":refs/swarm/main/"+name)
+	_, err = gitx.Transfer(ctx, r.Path, "fetch", "--quiet", r.Remote, refspec)
 	return err
 }
 
@@ -539,8 +555,16 @@ func (n *Node) start(ctx context.Context, c board.NodeCmd) {
 		return
 	}
 	if _, err := gitx.Head(ctx, r.Path, c.Base+"^{commit}"); err != nil {
-		if err := n.fetchMain(ctx, c.Repo); err != nil {
+		fetch := func() error { return n.fetchMain(ctx, c.Repo) }
+		if c.Ref != "" { // main joined with the task's dependencies, kept on the coordinator
+			fetch = func() error { return n.fetchRef(ctx, c.Repo, c.Ref) }
+		}
+		if err := fetch(); err != nil {
 			fail(fmt.Errorf("fetch the base from %s: %w", r.Remote, err))
+			return
+		}
+		if _, err := gitx.Head(ctx, r.Path, c.Base+"^{commit}"); err != nil {
+			fail(fmt.Errorf("base %.12s is not on the coordinator's main or its ref %q", c.Base, c.Ref))
 			return
 		}
 	}

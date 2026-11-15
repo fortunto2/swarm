@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/shellx"
+	"github.com/fortunto2/swarm/internal/taskbase"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
@@ -60,9 +62,14 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		if node == "" && !d.admitting() {
 			continue // a gate is the heaviest thing swarm runs; here it waits for the host too
 		}
-		main, err := gitx.Head(ctx, r.Path, r.MainRef())
-		if err != nil {
-			return err
+		base, _, err := taskbase.For(ctx, d.DB, r, t)
+		if errors.Is(err, taskbase.ErrConflict) {
+			d.blockOnBase(ctx, t.ID, db.Verifying, err)
+			continue
+		}
+		if err != nil { // one task's repo trouble does not hold every other gate
+			d.Log.Error("gate base", "task", t.ID, "err", err)
+			continue
 		}
 		claims, _ := d.DB.WriteClaims(ctx, t.ID)
 		d.gating[t.ID] = true
@@ -75,7 +82,7 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		task := t
 		go func() {
 			defer cancel()
-			v := gate.Static(gctx, r.Path, main, commit, claims, grants)
+			v := gate.StaticFrom(gctx, r.Path, []string{base, task.Base.String}, commit, claims, grants)
 			if v.OK && node != "" {
 				nv, ok, why := d.hub.gateOn(gctx, node, task, commit, r.GateTimeout.Duration+5*time.Minute)
 				d.results <- gateResult{taskID: id, commit: commit, v: nv, again: !ok, why: why}
@@ -192,7 +199,8 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 		return fmt.Errorf("repo %s: merge %q is not built yet", t.Repo, r.Merge)
 	}
 	wt := d.locate(t)
-	main, err := gitx.Head(ctx, r.Path, r.MainRef())
+	// main, or main plus the dependencies' deliveries when those are branches (taskbase)
+	main, _, err := taskbase.For(ctx, d.DB, r, t)
 	if err != nil {
 		return err
 	}
@@ -223,6 +231,7 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	}
 	d.DB.Event(ctx, "swarmd", t.ID, "merged", map[string]string{"commit": t.ResultCommit.String})
 	d.Log.Info("merged", "task", t.ID, "commit", t.ResultCommit.String)
+	taskbase.Forget(ctx, r.Path, t.ID)
 	if err := worktree.Remove(ctx, r.Path, wt); err != nil && d.onNode(t) == "" {
 		d.Log.Warn("worktree cleanup", "task", t.ID, "err", err)
 	}
@@ -233,6 +242,17 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 		d.afterMerge(context.WithoutCancel(ctx), t, r.Path)
 	}()
 	return nil
+}
+
+// blockOnBase: the task's dependencies do not join with main (taskbase.ErrConflict).
+func (d *Daemon) blockOnBase(ctx context.Context, id int64, from db.Status, err error) {
+	if d.DB.Move(ctx, "swarmd", id, []db.Status{from}, db.Blocked, db.Patch{ClearLease: true}) != nil {
+		return
+	}
+	t, _ := d.DB.GetTask(ctx, id)
+	_ = d.DB.Note(ctx, t.RunID, id, "swarmd", "review", "no base to work on: "+err.Error())
+	d.DB.Event(ctx, "swarmd", id, "base_conflict", map[string]string{"err": err.Error()})
+	d.notify(fmt.Sprintf("swarm %s: T%d blocked: %v", d.Cfg.Profile.Name, id, err))
 }
 
 func (d *Daemon) blockMerge(ctx context.Context, t db.Task, err error) {

@@ -103,7 +103,8 @@ type NodeCmd struct {
 	Slot      int             `json:"slot,omitempty"`
 	WallClock config.Duration `json:"wall_clock,omitempty"`
 
-	// gate: the commit is fetched from Ref on the coordinator's copy
+	// gate: the commit is fetched from Ref on the coordinator's copy. start: Ref is set when
+	// Base is not the coordinator's main (main joined with dependencies' deliveries).
 	Commit string `json:"commit,omitempty"`
 	Ref    string `json:"ref,omitempty"`
 

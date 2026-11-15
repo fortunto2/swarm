@@ -104,6 +104,32 @@ var protected = regexp.MustCompile(`(?i)(^|/)(` +
 	`\.envrc$|\.cargo/config|\.npmrc$|\.yarnrc|\.mise\.toml$|\.tool-versions$|` + // run in the operator's shell or toolchain
 	`\.vscode/|\.devcontainer/|\.idea/)`)
 
+// StaticFrom: Static measured from each base in turn, the first pass wins; else the first
+// verdict. A task on a joined base (main plus its dependencies' deliveries, taskbase) whose
+// main moved meanwhile shares two merge bases with the new base, and the diff from there takes
+// in the dependency's files; from the base the commit was built on, it is the task's own.
+func StaticFrom(ctx context.Context, wt string, bases []string, commit string, claims []string, g Grants) Verdict {
+	var first *Verdict
+	seen := map[string]bool{}
+	for _, b := range bases {
+		if b == "" || seen[b] {
+			continue
+		}
+		seen[b] = true
+		v := Static(ctx, wt, b, commit, claims, g)
+		if v.OK {
+			return v
+		}
+		if first == nil {
+			first = &v
+		}
+	}
+	if first == nil {
+		return Static(ctx, wt, "", commit, claims, g)
+	}
+	return *first
+}
+
 // Static checks run without a model: the change stays inside the task's files, and no test
 // is deleted or switched off unless the spec allows it. The change is measured against
 // main as it is now (three-dot: from the merge-base), so it is the task's own change only.

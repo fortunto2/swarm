@@ -70,7 +70,8 @@ fail the wall clock. For each:
   must not share a file. Lock files, migrations and generated code belong to one task.
 - `--tier`: `A` for hard work, `B` for routine. `S` is reserved for the lead.
 - `--needs`: ids of tasks that must merge first (it waits as draft). Use it instead of
-  hoping two tasks run in the right order.
+  hoping two tasks run in the right order. Under `merge = "branch"` the task starts on main
+  plus its dependencies' deliveries, and its own delivery carries them: land them together.
 - `--runs-on`: node labels the machine must have, when the work needs what only some
   machines have (`vpc` for a private database, `gpu`). Leave it out otherwise: any machine
   with a free account takes it, and that is what spreads the work.

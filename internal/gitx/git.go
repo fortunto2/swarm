@@ -4,6 +4,7 @@ package gitx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,6 +36,40 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+// ErrConflict: Join found the two commits conflict.
+var ErrConflict = errors.New("conflict")
+
+// Join makes a merge commit of a and b without a worktree (git merge-tree, git 2.38+). It is
+// deterministic: the identity and both dates are fixed (b's committer date), so the same two
+// parents always give the same commit id.
+func Join(ctx context.Context, dir, a, b, msg string) (string, error) {
+	tree, err := Run(ctx, dir, "merge-tree", "--write-tree", "--no-messages", a, b)
+	if err != nil {
+		// exit 1 is a conflict; 128 (unrelated histories) and 129 (git older than 2.38) are not
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return "", ErrConflict
+		}
+		return "", err
+	}
+	tree, _, _ = strings.Cut(tree, "\n")
+	when, err := Run(ctx, dir, "show", "-s", "--format=%ct", b)
+	if err != nil {
+		return "", err
+	}
+	full := append(append(append([]string{}, hardened...), "-C", dir), "commit-tree", tree, "-p", a, "-p", b, "-m", msg)
+	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Env = append(envx.Clean(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=swarm", "GIT_AUTHOR_EMAIL=swarm@local", "GIT_COMMITTER_NAME=swarm", "GIT_COMMITTER_EMAIL=swarm@local",
+		"GIT_AUTHOR_DATE=@"+when+" +0000", "GIT_COMMITTER_DATE=@"+when+" +0000")
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git commit-tree: %w: %s", err, strings.TrimSpace(errb.String()))
 	}
 	return strings.TrimSpace(out.String()), nil
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
+	"github.com/fortunto2/swarm/internal/taskbase"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
@@ -570,7 +571,7 @@ func (d *Daemon) prepareRemote(ctx context.Context, t db.Task, node, pid, model,
 	if err != nil {
 		return fail(err)
 	}
-	base, err := gitx.Head(ctx, r.Path, r.MainRef())
+	base, baseRef, err := taskbase.For(ctx, d.DB, r, t)
 	if err != nil {
 		return fail(err)
 	}
@@ -590,7 +591,7 @@ func (d *Daemon) prepareRemote(ctx context.Context, t db.Task, node, pid, model,
 	}
 	_ = os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o600)
 	tok := d.Board.Issue(board.Identity{TaskID: t.ID, Role: "worker"})
-	d.hub.order(node, board.NodeCmd{Kind: "start", Task: t.ID, Worker: worker, Repo: t.Repo, Base: base,
+	d.hub.order(node, board.NodeCmd{Kind: "start", Task: t.ID, Worker: worker, Repo: t.Repo, Base: base, Ref: baseRef,
 		Prompt: prompt, Provider: pid, Model: model, Token: tok, Slot: slot, WallClock: d.Cfg.Limits.TaskWallClock})
 	now := time.Now()
 	return started{taskID: t.ID, model: model, p: &proc{node: node, worker: worker, token: tok, provider: pid, slot: slot,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,5 +39,16 @@ func TestARepeatedGateOrderWaitsForTheFirst(t *testing.T) {
 	}
 	if !n.gating["5-abc"] {
 		t.Fatal("the repeated order cleared the running gate's mark")
+	}
+}
+
+// A start order names the ref its base is kept under; a node fetches only swarm's own refs,
+// so a coordinator cannot have it overwrite a branch of the person's repo.
+func TestFetchRefTakesOnlySwarmRefs(t *testing.T) {
+	n := &Node{}
+	for _, ref := range []string{"refs/heads/main", "refs/remotes/origin/main", "HEAD"} {
+		if err := n.fetchRef(context.Background(), "r", ref); err == nil || !strings.Contains(err.Error(), "not swarm's") {
+			t.Fatalf("fetchRef(%q) = %v, want a refusal", ref, err)
+		}
 	}
 }

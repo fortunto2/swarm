@@ -100,6 +100,14 @@ A task can wait for others: `swarm task add --needs 3,4` (or `needs` in `swarm_a
 It sits as `draft` until every task it needs is merged, then becomes `ready` and is built on
 top of them. Edges only go from a new task to existing ones, so the graph has no cycles.
 
+With `merge = "branch"` a merged dependency is a delivery branch, not part of main, so the
+task's base is main joined with those deliveries (`git merge-tree`, no worktree), kept at
+`refs/swarm/base/T<id>-<sha12>` where a node fetches it. The task starts there, its gate
+measures only its own diff from there, and its delivery carries the dependency with it. The
+join is deterministic, so the start, the gate and the merge step agree on one base. A
+delivery that no longer joins with main blocks the task with a note naming it: land or rebase
+that dependency, then retry. A base without main or without a dependency is never guessed.
+
 ## How a task moves
 
 ```

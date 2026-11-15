@@ -16,6 +16,7 @@ import (
 	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
+	"github.com/fortunto2/swarm/internal/taskbase"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
@@ -267,6 +268,7 @@ type GateSpec struct {
 	Commands   []string `json:"commands"`
 	TimeoutSec int      `json:"timeout_sec"`
 	Base       string   `json:"base"`
+	OwnBase    string   `json:"own_base,omitempty"` // the base the task started on, when it differs (gate.StaticFrom)
 	Files      []string `json:"files_write"`
 	AllowTests bool     `json:"allow_test_changes"`
 	Protected  bool     `json:"allow_protected"`
@@ -286,12 +288,12 @@ func (s *Service) GateSpec(ctx context.Context, tok string) (GateSpec, error) {
 	if err != nil {
 		return GateSpec{}, err
 	}
-	base, err := gitx.Head(ctx, r.Path, r.MainRef())
+	base, _, err := taskbase.For(ctx, s.DB, r, t)
 	if err != nil {
 		return GateSpec{}, err
 	}
 	files, _ := s.DB.WriteClaims(ctx, t.ID)
-	return GateSpec{Commands: r.Gate, TimeoutSec: int(r.GateTimeout.Seconds()), Base: base, Files: files,
+	return GateSpec{Commands: r.Gate, TimeoutSec: int(r.GateTimeout.Seconds()), Base: base, OwnBase: t.Base.String, Files: files,
 		AllowTests: gate.AllowsTestChanges(t.Spec), Protected: gate.GrantsFrom(t.Spec).Protected, Reruns: r.Reruns()}, nil
 }
 

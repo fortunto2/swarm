@@ -539,6 +539,32 @@ func (d *DB) UnmergedDeps(ctx context.Context, taskID int64) (int, error) {
 	return n, err
 }
 
+// Delivery: a merged task's id and the commit it delivered.
+type Delivery struct {
+	Task   int64
+	Commit string
+}
+
+// DepDeliveries: what a task's merged dependencies in the same repo delivered, oldest first.
+func (d *DB) DepDeliveries(ctx context.Context, taskID int64, repo string) ([]Delivery, error) {
+	rows, err := d.QueryContext(ctx, `SELECT n.id, n.result_commit FROM deps JOIN tasks n ON n.id=deps.needs_id
+		WHERE deps.task_id=? AND n.status='merged' AND n.repo=? AND coalesce(n.result_commit,'')!=''
+		ORDER BY n.id`, taskID, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Delivery
+	for rows.Next() {
+		var x Delivery
+		if err := rows.Scan(&x.Task, &x.Commit); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
 // ReopenRun: a run closed as done gets a task back in play.
 func (d *DB) ReopenRun(ctx context.Context, runID int64) error {
 	_, err := d.ExecContext(ctx, `UPDATE runs SET status='running' WHERE id=? AND status='done'`, runID)
