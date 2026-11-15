@@ -169,7 +169,8 @@ example config does. Any MCP server works the same way.
 3. Lead and task tree: decomposition, `split_task`, dependencies, file claims, batched merge queue
 4. Several providers: Codex adapter, tiers, cross-family review, rate-limit detection and failover
 5. Sandbox: workers in containers with an egress allowlist; unattended overnight runs
-6. `merge = "pr"`: leave a branch and a PR description for a human to push
+6. ~~`merge = "branch"`: the gated commit goes to a branch for a human to review and push~~;
+   `merge = "pr"`: the same, plus the PR description
 7. Nodes: workers on other machines over SSH, one coordinator per profile
 8. Scheduled and event work (`tick`, `event`, `script`) on the same queue
 
@@ -195,9 +196,20 @@ profile's state dir (mode 0600); a worker's per-attempt token cannot reach these
 Workers keep your hooks, skills and plugins: they help. What swarm watches instead is
 spend. Each attempt records tokens and dollars from the CLI's own final event (NULL when
 the CLI does not say). On a subscription those dollars are the CLI's list-price estimate
-of the quota used, not money billed; `budget_usd_day` caps that estimate. `swarm_status` shows the last 24 hours, and per-provider limits
-and failover arrive with several providers. A CLI that is not logged in takes its
-provider out of rotation on the first try instead of burning retries.
+of the quota used, not money billed; `budget_usd_day` caps that estimate. `swarm_status` shows the last 24 hours.
+A provider can also read the account's own window readings (`limits_file`, e.g. written by a
+status line) and pause above a share of them (`pause_above`), so scheduled work on the same
+account keeps its room; a worker that hits the limit cools its provider until the reset the
+CLI printed. A CLI that is not logged in takes its provider out of rotation on the first try
+instead of burning retries.
+
+## Sharing a host
+
+On a machine that also runs other work, `[limits] admit` is a shell command swarm asks
+before it starts a worker or a gate: exit 0 admits, anything else holds, and `swarm status`
+says why and since when. Hold while another job runs, or while memory is short (a type
+check on a large TypeScript repo can take 3 GB, and a gate killed for it is an attempt
+spent on nothing in the code).
 
 ## Using it from Claude Code
 
