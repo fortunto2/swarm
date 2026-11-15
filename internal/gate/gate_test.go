@@ -62,19 +62,31 @@ func TestStatic(t *testing.T) {
 		ok     bool
 	}{
 		{"inside claims", func(d string) { write(t, d, "a.go", "package a\n// x\n") }, []string{"a.go"}, true},
-		{"no claims = anything", func(d string) { write(t, d, "b.go", "package a\n") }, nil, true},
+		{"no claims = nothing", func(d string) { write(t, d, "b.go", "package a\n") }, nil, false},
+		{"** = whole repo", func(d string) { write(t, d, "b.go", "package a\n") }, []string{"**"}, true},
 		{"dir claim", func(d string) { write(t, d, "pkg/x.go", "package pkg\n") }, []string{"pkg/"}, true},
 		{"outside claims", func(d string) { write(t, d, "b.go", "package a\n") }, []string{"a.go"}, false},
-		{"test deleted", func(d string) { os.Remove(filepath.Join(d, "a_test.go")) }, nil, false},
+		{"test deleted", func(d string) { os.Remove(filepath.Join(d, "a_test.go")) }, []string{"**"}, false},
 		{"test skipped", func(d string) {
 			write(t, d, "a_test.go", "package a\nfunc TestA(t *T) { t.Skip(\"later\") }\n")
-		}, nil, false},
+		}, []string{"**"}, false},
+		{"test replaced by a symlink", func(d string) {
+			os.Remove(filepath.Join(d, "a_test.go"))
+			_ = os.Symlink("a.go", filepath.Join(d, "a_test.go"))
+		}, []string{"**"}, false},
+		{"TestMain takes over the run", func(d string) {
+			write(t, d, "main_test.go", "package a\nfunc TestMain(m *M) { os.Exit(0) }\n")
+		}, []string{"**"}, false},
+		{"existing test shrank", func(d string) { write(t, d, "a_test.go", "package a\n") }, []string{"**"}, false},
+		{"new test file is fine", func(d string) { write(t, d, "b_test.go", "package a\nfunc TestB(t *T) {}\n") }, []string{"**"}, true},
+		{"protected path needs a grant", func(d string) { write(t, d, ".claude/settings.json", "{}") }, []string{"**"}, false},
+		{"CI config needs a grant", func(d string) { write(t, d, ".github/workflows/x.yml", "on: push") }, []string{".github/"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			d, base := repo(t)
 			c.change(d)
-			v := Static(ctx, d, base, commit(t, d), c.claims, false)
+			v := Static(ctx, d, base, commit(t, d), c.claims, Grants{})
 			if v.OK != c.ok {
 				t.Fatalf("ok=%v want %v: %s %s", v.OK, c.ok, v.Reason, v.Tail)
 			}
@@ -145,18 +157,21 @@ func TestSkipDetection(t *testing.T) {
 		"@pytest.mark.skip", "pytest.skip(\"x\")", "self.skipTest(\"x\")", "@unittest.skip",
 		"it.skip('x', () => {})", "describe.only('x', () => {})", "xit('x', () => {})", "fit('x', () => {})",
 		"#[ignore]", "@Disabled", "@Ignore", "try XCTSkipIf(true)",
+		"//go:build ignore", "@pytest.mark.xfail", "fdescribe('x', () => {})", "func TestMain(m *testing.M) {", "os.Exit(0)",
+		"def pytest_collection_modifyitems(items):", "collect_ignore = ['x']",
 	}
 	for _, line := range caught {
 		if switchedOff("+"+line) == "" {
 			t.Errorf("not caught: %s", line)
 		}
 	}
-	for _, line := range []string{"model.fit(x)", "pending := 3", "return it.done()"} {
+	for _, line := range []string{"model.fit(x)", "pending := 3", "return it.done()", "@pytest.mark.parametrize", "//go:build linux"} {
 		if switchedOff("+"+line) != "" {
 			t.Errorf("false alarm: %s", line)
 		}
 	}
-	for _, f := range []string{"FooTest.java", "src/BarTests.swift", "a/b_spec.rb", "x.test.mjs", "__tests__/a.js", "pkg/a_test.go"} {
+	for _, f := range []string{"FooTest.java", "src/BarTests.swift", "a/b_spec.rb", "x.test.mjs", "__tests__/a.js", "pkg/a_test.go",
+		"Tests/AppTests/Helper.swift", "conftest.py", "pytest.ini", "jest.config.ts"} {
 		if !testFile.MatchString(f) {
 			t.Errorf("not a test file: %s", f)
 		}
@@ -173,7 +188,7 @@ func TestDeletedNonASCIITest(t *testing.T) {
 	write(t, d, "tests/é_test.go", "package a\n")
 	base := commit(t, d)
 	os.Remove(filepath.Join(d, "tests/é_test.go"))
-	v := Static(ctx, d, base, commit(t, d), nil, false)
+	v := Static(ctx, d, base, commit(t, d), []string{"**"}, Grants{})
 	if v.OK || v.Reason != "tests deleted" {
 		t.Fatalf("got %+v", v)
 	}
@@ -200,5 +215,52 @@ func TestGateDoesNotHangOnEscapedChild(t *testing.T) {
 	v := Run(context.Background(), d, []string{`perl -MPOSIX -e 'POSIX::setsid(); sleep 60' & sleep 60`}, 300*time.Millisecond, 0)
 	if v.OK || time.Since(start) > 15*time.Second {
 		t.Fatalf("gate hung or passed: ok=%v after %v", v.OK, time.Since(start))
+	}
+}
+
+// Grants open exactly what they name.
+func TestGrants(t *testing.T) {
+	ctx := context.Background()
+	d, base := repo(t)
+	os.Remove(filepath.Join(d, "a_test.go"))
+	c := commit(t, d)
+	if v := Static(ctx, d, base, c, []string{"**"}, Grants{Tests: true}); !v.OK {
+		t.Fatalf("test grant did not allow a deletion: %+v", v)
+	}
+	d2, base2 := repo(t)
+	write(t, d2, ".claude/settings.json", "{}")
+	c2 := commit(t, d2)
+	if v := Static(ctx, d2, base2, c2, []string{"**"}, Grants{Tests: true}); v.OK {
+		t.Fatal("a test grant opened protected paths")
+	}
+	if v := Static(ctx, d2, base2, c2, []string{"**"}, Grants{Protected: true}); !v.OK {
+		t.Fatalf("protected grant: %+v", v)
+	}
+	if g := GrantsFrom("x\n[allow-protected]\n"); !g.Protected || g.Tests {
+		t.Fatalf("GrantsFrom: %+v", g)
+	}
+}
+
+// The change is measured from the merge-base with main: main moving after the task
+// branched (others merged) does not make their files this task's change.
+func TestStaticWhenMainMoved(t *testing.T) {
+	ctx := context.Background()
+	d, base := repo(t)
+	git(t, d, "checkout", "-q", "-b", "task", base)
+	write(t, d, "mine.go", "package a\n")
+	task := commit(t, d)
+	git(t, d, "checkout", "-q", "main")
+	write(t, d, "theirs.go", "package a\n")
+	mainNow := commit(t, d)
+	if v := Static(ctx, d, mainNow, task, []string{"mine.go"}, Grants{}); !v.OK {
+		t.Fatalf("main's newer file counted as the task's: %+v", v)
+	}
+}
+
+func TestEmptyChangeFails(t *testing.T) {
+	d, base := repo(t)
+	git(t, d, "commit", "-q", "--allow-empty", "-m", "nothing")
+	if v := Static(context.Background(), d, base, head(t, d), []string{"**"}, Grants{}); v.OK || v.Reason != "empty change" {
+		t.Fatalf("got %+v", v)
 	}
 }

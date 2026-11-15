@@ -17,7 +17,7 @@ func TestWorkerTokenCannotUseSessionTools(t *testing.T) {
 	s := &Service{DB: d, BaseFor: func(string) (string, error) { return "abc", nil }}
 	worker := s.Issue(Identity{TaskID: 1, Role: "worker"})
 	ctx := context.Background()
-	if _, err := s.AddTask(ctx, worker, AddTaskIn{Repo: "r", Title: "t", Spec: "s", Acceptance: "a"}); AsError(err).Code != "forbidden" {
+	if _, err := s.AddTask(ctx, worker, AddTaskIn{Repo: "r", Title: "t", Spec: "s", Acceptance: "a", Files: []string{"**"}}); AsError(err).Code != "forbidden" {
 		t.Fatalf("worker added a task: %v", err)
 	}
 	if _, err := s.Status(ctx, "not-a-token"); AsError(err).Code != "bad_token" {
@@ -28,11 +28,14 @@ func TestWorkerTokenCannotUseSessionTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.IssueFixed(op, Identity{Role: "lead"})
-	if _, err := s.AddTask(ctx, op, AddTaskIn{Repo: "r", Title: "t", Spec: "s", Acceptance: "a"}); err != nil {
+	if _, err := s.AddTask(ctx, op, AddTaskIn{Repo: "r", Title: "t", Spec: "s", Acceptance: "a", Files: []string{"**"}}); err != nil {
 		t.Fatalf("operator could not add: %v", err)
 	}
 	if _, err := s.AddTask(ctx, op, AddTaskIn{Repo: "r", Title: "t", Spec: "s"}); AsError(err).Code != "incomplete" {
 		t.Fatalf("task without acceptance accepted: %v", err)
+	}
+	if _, err := s.AddTask(ctx, op, AddTaskIn{Repo: "r", Title: "t", Spec: "s", Acceptance: "a"}); AsError(err).Code != "no_files" {
+		t.Fatalf("task without files accepted: %v", err)
 	}
 }
 

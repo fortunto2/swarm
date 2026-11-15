@@ -79,6 +79,9 @@ func (s *Service) AddTask(ctx context.Context, tok string, in AddTaskIn) (map[st
 	if in.Title == "" || in.Spec == "" || in.Acceptance == "" {
 		return nil, &Error{"incomplete", "title, spec and acceptance are required; acceptance is what the gate can check"}
 	}
+	if len(in.Files) == 0 {
+		return nil, &Error{"no_files", `files are required: the paths the task may write (dir/ for a directory, "**" for the whole repo, said on purpose)`}
+	}
 	if in.Tier == "" {
 		in.Tier = "B"
 	}

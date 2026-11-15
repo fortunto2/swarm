@@ -102,7 +102,7 @@ func (d *DB) AddTask(ctx context.Context, n NewTask) (int64, error) {
 		return 0, err
 	}
 	for _, f := range n.Files {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO file_claims(path, task_id, mode) VALUES(?, ?, 'write')`, f, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO file_claims(path, task_id, mode) VALUES(?, ?, 'write')`, f, id); err != nil {
 			return 0, err
 		}
 	}

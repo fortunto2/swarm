@@ -40,10 +40,10 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		claims, _ := d.DB.WriteClaims(ctx, t.ID)
 		d.gating[t.ID] = true
 		id, commit := t.ID, t.ResultCommit.String
-		allow := gate.AllowsTestChanges(t.Spec)
+		grants := gate.GrantsFrom(t.Spec)
 		dir := filepath.Join(d.Cfg.StatePath(), "gates", fmt.Sprintf("T%d-%.12s", id, commit))
 		go func() {
-			v := gate.Static(ctx, r.Path, main, commit, claims, allow)
+			v := gate.Static(ctx, r.Path, main, commit, claims, grants)
 			if v.OK {
 				v = runGate(ctx, r, dir, commit)
 			}

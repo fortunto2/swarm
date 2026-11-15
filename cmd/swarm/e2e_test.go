@@ -116,9 +116,10 @@ func addTask(t *testing.T, prof string, files string) {
 	t.Helper()
 	args := []string{"task", "add", "--repo", "app", "--title", "add Two", "--spec", "add func Two() int returning 2, with a test",
 		"--acceptance", "go test passes; TestTwo exists"}
-	if files != "" {
-		args = append(args, "--files", files)
+	if files == "" {
+		files = "**" // whole repo, said on purpose: the test is not about claims
 	}
+	args = append(args, "--files", files)
 	if out, err := swarm(t, prof, 30*time.Second, args...); err != nil {
 		t.Fatalf("task add: %v\n%s", err, out)
 	}
@@ -386,11 +387,11 @@ git add -A && git commit -qm "T$SWARM_TASK_ID"
 "$SWARM_BIN" board done "$(git rev-parse HEAD)"
 `
 	prof := profile(t, repo, worker, 4)
-	if out, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--title", "A",
+	if out, err := swarm(t, prof, 30*time.Second, "task", "add", "--files", "**", "--repo", "app", "--title", "A",
 		"--spec", "a", "--acceptance", "go test passes"); err != nil || !strings.Contains(out, "task 1 ready") {
 		t.Fatalf("A: %v %s", err, out)
 	}
-	out, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--run", "1", "--title", "B",
+	out, err := swarm(t, prof, 30*time.Second, "task", "add", "--files", "**", "--repo", "app", "--run", "1", "--title", "B",
 		"--spec", "b", "--acceptance", "go test passes", "--needs", "1")
 	if err != nil || !strings.Contains(out, "task 2 draft") {
 		t.Fatalf("B: %v %s", err, out)
@@ -405,7 +406,7 @@ git add -A && git commit -qm "T$SWARM_TASK_ID"
 	if log := sh(t, repo, "git log --format=%s main"); !strings.HasPrefix(log, "T2\nT1\n") {
 		t.Fatalf("order on main:\n%s", log)
 	}
-	if _, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--title", "C",
+	if _, err := swarm(t, prof, 30*time.Second, "task", "add", "--files", "**", "--repo", "app", "--title", "C",
 		"--spec", "c", "--acceptance", "x", "--needs", "99"); err == nil {
 		t.Fatal("a dependency on a task that does not exist was accepted")
 	}
@@ -540,8 +541,8 @@ swarm board done "$(git rev-parse HEAD)"
 	b, _ := os.ReadFile(toml)
 	_ = os.WriteFile(toml, []byte(strings.Replace(string(b), "family = \"mock\"", "family = \"mock\"\nbudget_usd_day = 0.4", 1)), 0o600)
 	for _, a := range [][]string{
-		{"task", "add", "--repo", "app", "--title", "A", "--spec", "a", "--acceptance", "x"},
-		{"task", "add", "--repo", "app", "--run", "1", "--title", "B", "--spec", "b", "--acceptance", "x", "--needs", "1"},
+		{"task", "add", "--files", "**", "--repo", "app", "--title", "A", "--spec", "a", "--acceptance", "x"},
+		{"task", "add", "--files", "**", "--repo", "app", "--run", "1", "--title", "B", "--spec", "b", "--acceptance", "x", "--needs", "1"},
 	} {
 		if out, err := swarm(t, prof, 30*time.Second, a...); err != nil {
 			t.Fatalf("%v %s", err, out)
@@ -571,7 +572,7 @@ func TestNotifiesBlockedAndRunDone(t *testing.T) {
 	b, _ := os.ReadFile(toml)
 	_ = os.WriteFile(toml, []byte(strings.Replace(string(b), "[repos.app]", fmt.Sprintf("notify = \"printf '%%s\\\\n' >> %s\"\n\n[repos.app]", notes), 1)), 0o600)
 	addTask(t, prof, "")
-	if out, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--title", "ask", "--spec", "s", "--acceptance", "a"); err != nil {
+	if out, err := swarm(t, prof, 30*time.Second, "task", "add", "--files", "**", "--repo", "app", "--title", "ask", "--spec", "s", "--acceptance", "a"); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
 	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {

@@ -243,6 +243,7 @@ type GateSpec struct {
 	Base       string   `json:"base"`
 	Files      []string `json:"files_write"`
 	AllowTests bool     `json:"allow_test_changes"`
+	Protected  bool     `json:"allow_protected"`
 	Reruns     int      `json:"reruns"`
 }
 
@@ -265,5 +266,5 @@ func (s *Service) GateSpec(ctx context.Context, tok string) (GateSpec, error) {
 	}
 	files, _ := s.DB.WriteClaims(ctx, t.ID)
 	return GateSpec{Commands: r.Gate, TimeoutSec: int(r.GateTimeout.Seconds()), Base: base, Files: files,
-		AllowTests: gate.AllowsTestChanges(t.Spec), Reruns: r.Reruns()}, nil
+		AllowTests: gate.AllowsTestChanges(t.Spec), Protected: gate.GrantsFrom(t.Spec).Protected, Reruns: r.Reruns()}, nil
 }

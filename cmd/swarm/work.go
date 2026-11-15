@@ -245,7 +245,7 @@ func gateCmd() *cobra.Command {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
 			if head, err := gitx.Head(ctx, dir, "HEAD"); err == nil && head != spec.Base {
-				if v := gate.Static(ctx, dir, spec.Base, head, spec.Files, spec.AllowTests); !v.OK {
+				if v := gate.Static(ctx, dir, spec.Base, head, spec.Files, gate.Grants{Tests: spec.AllowTests, Protected: spec.Protected}); !v.OK {
 					fmt.Fprintf(out, "gate: FAIL (%s) %s\n%s\n", v.Stage, v.Reason, v.Tail)
 					return errors.New("static checks failed")
 				}
@@ -275,6 +275,9 @@ func addViaDaemon(c *config.Config, in board.AddTaskIn) (run, id int64, viaDaemo
 		}
 		if in.Title == "" || in.Spec == "" || in.Acceptance == "" {
 			return 0, 0, false, errors.New("title, spec and acceptance must not be empty")
+		}
+		if len(in.Files) == 0 {
+			return 0, 0, false, errors.New(`--files is required (dir/ for a directory, "**" for the whole repo)`)
 		}
 		return in.Run, 0, false, nil
 	}
