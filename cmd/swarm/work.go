@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -98,7 +99,8 @@ func taskCmd() *cobra.Command {
 		_ = add.MarkFlagRequired(n)
 	}
 	t := &cobra.Command{Use: "task", Short: "Tasks"}
-	t.AddCommand(add)
+	t.AddCommand(add, taskOp("retry", "swarm_retry_task", "Give a blocked task a fresh start"),
+		taskOp("cancel", "swarm_cancel_task", "Cancel a task; a running worker is stopped"))
 	return t
 }
 
@@ -112,6 +114,11 @@ func daemonCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			release, err := dispatch.Lock(c.StatePath()) // before the database is touched
+			if err != nil {
+				return err
+			}
+			defer release()
 			d, err := db.Open(c.DBPath())
 			if err != nil {
 				return err
@@ -121,11 +128,6 @@ func daemonCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			release, err := dispatch.Lock(c.StatePath())
-			if err != nil {
-				return err
-			}
-			defer release()
 			dm, err := dispatch.New(c, d, self)
 			if err != nil {
 				return err
@@ -295,4 +297,36 @@ func addViaDaemon(c *config.Config, in board.AddTaskIn) (run, id int64, viaDaemo
 		return 0, 0, true, err
 	}
 	return out.Run, out.Task, true, nil
+}
+
+// taskOp: an operator operation on one task, through the daemon (it is the only writer).
+func taskOp(use, op, short string) *cobra.Command {
+	return &cobra.Command{
+		Use: use + " <task-id>", Short: short + " (needs the daemon running)", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, a []string) error {
+			id, err := strconv.ParseInt(a[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("task id: %w", err)
+			}
+			c, err := load()
+			if err != nil {
+				return err
+			}
+			cl, err := board.Dial(dispatch.SocketPath(c.StatePath()))
+			if err != nil {
+				return fmt.Errorf("start the daemon first (swarm daemon): %w", err)
+			}
+			defer cl.Close()
+			opTok, err := board.OperatorToken(c.StatePath())
+			if err != nil {
+				return err
+			}
+			res, err := cl.Do(op, opTok, map[string]int64{"task_id": id})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(res))
+			return nil
+		},
+	}
 }

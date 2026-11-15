@@ -181,6 +181,10 @@ git add -A && git commit -qm "T$SWARM_TASK_ID: quiet a test" --allow-empty
 	if st := status(t, prof); !strings.Contains(st, "blocked      1") {
 		t.Fatalf("want blocked after 2 attempts:\n%s", st)
 	}
+	second, err := os.ReadFile(filepath.Join(prof, "state", "attempts", "mock-T1-2", "prompt.md"))
+	if err != nil || !strings.Contains(string(second), "a test was switched off") {
+		t.Fatalf("the second attempt's prompt lacks the first one's failure: %v", err)
+	}
 	if sh(t, repo, "git rev-parse main") != before {
 		t.Fatal("main moved on a weakened test")
 	}
@@ -192,8 +196,12 @@ func TestSilentWorkerBlocksAfterThreeInfraFailures(t *testing.T) {
 	repo := testbed(t)
 	prof := profile(t, repo, "exit 0\n", 4)
 	addTask(t, prof, "")
-	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
+	out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle")
+	if err != nil {
 		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if n := strings.Count(out, "worker started"); n != 3 {
+		t.Fatalf("want exactly 3 attempts before blocking, got %d", n)
 	}
 	if st := status(t, prof); !strings.Contains(st, "blocked      1") {
 		t.Fatalf("want blocked:\n%s", st)
@@ -327,7 +335,7 @@ func TestRestartReconcilesRunningTasks(t *testing.T) {
 	repo := testbed(t)
 	marks := t.TempDir()
 	marker := filepath.Join(marks, "first")
-	worker := fmt.Sprintf("if [ ! -f %q ]; then touch %q; exec sleep 300; fi\n", marker, marker) + goodWorker
+	worker := fmt.Sprintf("if [ ! -f %q ]; then touch %q; exec sleep 313; fi\n", marker, marker) + goodWorker
 	prof := profile(t, repo, worker, 4)
 	addTask(t, prof, "")
 	first := exec.Command(bin, "--profile", prof, "daemon")
@@ -340,16 +348,23 @@ func TestRestartReconcilesRunningTasks(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	_ = first.Process.Kill() // no cleanup: the worker is orphaned, the task stays running
+	time.Sleep(300 * time.Millisecond) // the attempt's pid is recorded
+	_ = first.Process.Kill()           // a crash: no shutdown, the worker is orphaned
 	_ = first.Wait()
-	_ = exec.Command("pkill", "-f", "sleep 300").Run()
-
+	orphan := attemptPid(t, prof)
+	defer exec.Command("kill", "-9", orphan).Run()
+	if !alive(orphan) {
+		t.Fatal("the orphaned worker should still be alive before the restart")
+	}
 	start := time.Now()
 	if out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle"); err != nil {
 		t.Fatalf("daemon: %v\n%s", err, out)
 	}
 	if took := time.Since(start); took > 30*time.Second {
 		t.Fatalf("restart waited %v: the lease was not bypassed", took)
+	}
+	if alive(orphan) {
+		t.Fatal("the restart left the orphaned worker running")
 	}
 	if st := status(t, prof); !strings.Contains(st, "merged       1") {
 		t.Fatalf("want merged after restart:\n%s", st)
@@ -590,15 +605,20 @@ func TestNotifiesBlockedAndRunDone(t *testing.T) {
 // after report_done (here: deleting a test) cannot slip that onto main.
 func TestMergesTheGatedCommitNotTheTip(t *testing.T) {
 	repo := testbed(t)
-	worker := goodWorker + `git rm -q one_test.go && git commit -qm "after report: drop a test"
-sleep 2
+	// commit the good change, then a test deletion on top, and submit the good one: the
+	// branch tip is ahead of what was gated before the daemon ever looks
+	worker := `printf 'package app\n\nfunc Two() int { return 2 }\n' > two.go
+git add -A && git commit -qm "T$SWARM_TASK_ID: add Two"
+good=$(git rev-parse HEAD)
+git rm -q one_test.go && git commit -qm "after the gated commit: drop a test"
+swarm board done "$good"
 `
 	prof := profile(t, repo, worker, 4)
 	addTask(t, prof, "")
 	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
 		t.Fatalf("daemon: %v\n%s", err, out)
 	}
-	sh(t, repo, "test -f one_test.go") // fails the test if the post-report commit landed
+	sh(t, repo, "test -f one_test.go")
 	if msg := sh(t, repo, "git log -1 --format=%s main"); !strings.Contains(msg, "add Two") {
 		t.Fatalf("main tip is %q, want the gated commit", msg)
 	}
@@ -613,7 +633,7 @@ func TestSecondDaemonRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = first.Process.Signal(os.Interrupt); _ = first.Wait() }()
-	time.Sleep(300 * time.Millisecond)
+	waitSocket(t, prof)
 	out, err := swarm(t, prof, 10*time.Second, "daemon")
 	if err == nil || !strings.Contains(out, "another swarm daemon holds this profile") {
 		t.Fatalf("second daemon: %v\n%s", err, out)
@@ -639,3 +659,129 @@ exit 1
 		t.Fatalf("want blocked:\n%s", st)
 	}
 }
+
+func waitSocket(t *testing.T, prof string) {
+	t.Helper()
+	sock := dispatch.SocketPath(filepath.Join(prof, "state"))
+	for i := 0; i < 200; i++ {
+		if _, err := os.Stat(sock); err == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("daemon socket never appeared")
+}
+
+// A blocked task can be retried by the operator: counters reset, and it merges once the
+// cause is gone (here: the worker stays silent until a marker exists).
+func TestRetryBlockedTask(t *testing.T) {
+	repo := testbed(t)
+	marker := filepath.Join(t.TempDir(), "fixed")
+	prof := profile(t, repo, fmt.Sprintf("[ -f %q ] || exit 0\n", marker)+goodWorker, 4)
+	addTask(t, prof, "")
+	if out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if st := status(t, prof); !strings.Contains(st, "blocked      1") {
+		t.Fatalf("want blocked first:\n%s", st)
+	}
+	_ = os.WriteFile(marker, nil, 0o600)
+	daemon := exec.Command(bin, "--profile", prof, "daemon")
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() }()
+	waitSocket(t, prof)
+	if out, err := swarm(t, prof, 10*time.Second, "task", "retry", "1"); err != nil {
+		t.Fatalf("retry: %v\n%s", err, out)
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	for !strings.Contains(status(t, prof), "merged       1") {
+		if time.Now().After(deadline) {
+			t.Fatalf("not merged after retry:\n%s", status(t, prof))
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// Cancelling a running task stops its worker, and the run closes.
+func TestCancelStopsTheWorker(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, "exec sleep 311\n", 4)
+	addTask(t, prof, "")
+	daemon := exec.Command(bin, "--profile", prof, "daemon")
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() }()
+	waitSocket(t, prof)
+	var pid string
+	for i := 0; i < 100; i++ {
+		out, _ := exec.Command("sqlite3", filepath.Join(prof, "state", "swarm.db"), "SELECT pid FROM attempts WHERE pid IS NOT NULL").CombinedOutput()
+		if pid = strings.TrimSpace(string(out)); pid != "" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	defer exec.Command("kill", "-9", pid).Run()
+	if out, err := swarm(t, prof, 10*time.Second, "task", "cancel", "1"); err != nil {
+		t.Fatalf("cancel: %v\n%s", err, out)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for alive(pid) {
+		if time.Now().After(deadline) {
+			t.Fatal("the cancelled task's worker is still running")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if st := status(t, prof); !strings.Contains(st, "cancelled    1") {
+		t.Fatalf("want cancelled:\n%s", st)
+	}
+}
+
+// main moving under a gated commit with a conflict sends the task back to its worker, but
+// not forever: the third conflict blocks it.
+func TestRebaseConflictsAreCapped(t *testing.T) {
+	repo := testbed(t)
+	marker := filepath.Join(t.TempDir(), "moved")
+	worker := fmt.Sprintf(`if [ ! -f %[1]q ]; then
+  printf 'package app\n\nfunc One() int { return 1 } // the task\n' > one.go
+  git add -A && git commit -qm "T$SWARM_TASK_ID: one is 11"
+fi
+c=$(git rev-parse HEAD)
+if [ ! -f %[1]q ]; then
+  touch %[1]q
+  main=$(git rev-parse --path-format=absolute --git-common-dir)/..
+  printf 'package app\n\nfunc One() int { return 1 } // someone else\n' > "$main/one.go"
+  git -C "$main" -c user.name=t -c user.email=t@example.com commit -qam "someone else edits the same line"
+fi
+swarm board done "$c"
+`, marker)
+	prof := profile(t, repo, worker, 4)
+	addTask(t, prof, "one.go")
+	out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle")
+	if err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if st := status(t, prof); !strings.Contains(st, "blocked      1") {
+		t.Fatalf("want blocked after repeated conflicts:\n%s\n%s", st, out)
+	}
+	notes, _ := exec.Command("sqlite3", filepath.Join(prof, "state", "swarm.db"),
+		"SELECT body FROM notes WHERE task_id=1 ORDER BY id DESC LIMIT 1").CombinedOutput()
+	if !strings.Contains(string(notes), "conflicted 3 times") {
+		t.Fatalf("last note: %s", notes)
+	}
+}
+
+// attemptPid: the process group swarm recorded for a task's first attempt.
+func attemptPid(t *testing.T, prof string) string {
+	t.Helper()
+	out, err := exec.Command("sqlite3", filepath.Join(prof, "state", "swarm.db"),
+		"SELECT pid FROM attempts WHERE pid IS NOT NULL ORDER BY id LIMIT 1").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		t.Fatalf("no attempt pid recorded: %v %s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func alive(pid string) bool { return exec.Command("kill", "-0", pid).Run() == nil }

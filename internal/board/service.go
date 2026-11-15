@@ -124,6 +124,9 @@ func (s *Service) GetTask(ctx context.Context, tok string) (TaskView, error) {
 	return v, nil
 }
 
+// maxNotesPerTask bounds what one task can write into the database.
+const maxNotesPerTask = 200
+
 var noteKinds = []string{"plan", "progress", "finding", "question"}
 
 func (s *Service) PostNote(ctx context.Context, tok, kind, body string) error {
@@ -144,6 +147,9 @@ func (s *Service) PostNote(ctx context.Context, tok, kind, body string) error {
 	t, err := s.DB.GetTask(ctx, id.TaskID)
 	if err != nil {
 		return err
+	}
+	if n, err := s.DB.NoteCount(ctx, t.ID); err == nil && n >= maxNotesPerTask {
+		return &Error{"too_many_notes", "this task already has the maximum of notes; post the gist, not a stream"}
 	}
 	return s.DB.Note(ctx, t.RunID, t.ID, id.Actor(), kind, body)
 }

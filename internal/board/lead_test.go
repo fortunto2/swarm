@@ -2,8 +2,10 @@ package board
 
 import (
 	"context"
+	"net"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/fortunto2/swarm/internal/db"
 )
@@ -64,5 +66,48 @@ func TestOpTableEnforcesRoles(t *testing.T) {
 	}
 	if _, err := s.Do(ctx, "nope", lead, nil); AsError(err).Code != "unknown_op" {
 		t.Fatalf("unknown op: %v", err)
+	}
+}
+
+// The socket closes a connection that sends more than its budget, and the daemon lives on.
+func TestSocketCapsAConnection(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	s := &Service{DB: d}
+	sock := filepath.Join(t.TempDir(), "b.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = Serve(ctx, sock, s) }()
+	var c net.Conn
+	for i := 0; i < 100; i++ {
+		if c, err = net.Dial("unix", sock); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if c == nil {
+		t.Fatal(err)
+	}
+	junk := make([]byte, 1<<20)
+	for i := range junk {
+		junk[i] = ' '
+	}
+	var werr error
+	for i := 0; i < 40 && werr == nil; i++ { // 40 MB of whitespace: never a complete request
+		_, werr = c.Write(junk)
+	}
+	if werr == nil {
+		t.Fatal("a 40 MB stream was accepted on one connection")
+	}
+	cl, err := Dial(sock) // the door still opens for the next caller
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	if _, err := cl.Do("get_task", "nope", nil); AsError(err).Code != "bad_token" {
+		t.Fatalf("daemon not answering after the flood: %v", err)
 	}
 }

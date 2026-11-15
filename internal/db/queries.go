@@ -248,16 +248,6 @@ var settledList = func() string {
 	return strings.Join(q, ",")
 }()
 
-// Promote moves every draft whose dependencies are all merged to ready: the one bulk
-// transition, draft -> ready, kept here with the others.
-func (d *DB) Promote(ctx context.Context) error {
-	_, err := d.ExecContext(ctx, `UPDATE tasks SET status='ready', updated_at=unixepoch()
-		WHERE status='draft' AND NOT EXISTS (
-		  SELECT 1 FROM deps JOIN tasks n ON n.id=deps.needs_id
-		  WHERE deps.task_id=tasks.id AND n.status!='merged')`)
-	return err
-}
-
 func (d *DB) DisableProvider(ctx context.Context, id, why string) error {
 	_, err := d.ExecContext(ctx, `INSERT INTO providers(id, state, last_error) VALUES(?, 'disabled', ?)
 		ON CONFLICT(id) DO UPDATE SET state='disabled', last_error=excluded.last_error`, id, why)
@@ -441,4 +431,73 @@ func (d *DB) DraftsWithDeadDeps(ctx context.Context) (map[int64]int64, error) {
 		out[id] = dep
 	}
 	return out, rows.Err()
+}
+
+func (d *DB) EventCount(ctx context.Context, taskID int64, typ string) (int, error) {
+	var n int
+	err := d.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE task_id=? AND type=?`, taskID, typ).Scan(&n)
+	return n, err
+}
+
+// CloseRunIfSettled marks a run done only if, in the same statement, none of its tasks is
+// unsettled: a task added between the count and the write keeps the run open.
+func (d *DB) CloseRunIfSettled(ctx context.Context, runID int64) (bool, error) {
+	r, err := d.ExecContext(ctx, `UPDATE runs SET status='done' WHERE id=? AND status IN ('planning','running')
+		AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=runs.id AND t.status NOT IN (`+settledList+`))`, runID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := r.RowsAffected()
+	return n == 1, nil
+}
+
+// SetAttemptPid records the process group of a task's open attempt, so a daemon that
+// restarts after a crash can stop workers its predecessor left running.
+func (d *DB) SetAttemptPid(ctx context.Context, logPath string, pid int) error {
+	_, err := d.ExecContext(ctx, `UPDATE attempts SET pid=? WHERE log_path=?`, pid, logPath)
+	return err
+}
+
+// OpenAttemptPids: process groups of attempts that never ended, on a node.
+func (d *DB) OpenAttemptPids(ctx context.Context, node string) (map[int64]int, error) {
+	rows, err := d.QueryContext(ctx, `SELECT task_id, pid FROM attempts WHERE outcome IS NULL AND pid IS NOT NULL AND coalesce(node,'')=?`, node)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var pid int
+		if err := rows.Scan(&id, &pid); err != nil {
+			return nil, err
+		}
+		out[id] = pid
+	}
+	return out, rows.Err()
+}
+
+// Promotable: drafts whose dependencies all merged.
+func (d *DB) Promotable(ctx context.Context) ([]int64, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id FROM tasks WHERE status='draft' AND NOT EXISTS (
+		SELECT 1 FROM deps JOIN tasks n ON n.id=deps.needs_id WHERE deps.task_id=tasks.id AND n.status!='merged')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) NoteCount(ctx context.Context, taskID int64) (int, error) {
+	var n int
+	err := d.QueryRowContext(ctx, `SELECT count(*) FROM notes WHERE task_id=?`, taskID).Scan(&n)
+	return n, err
 }

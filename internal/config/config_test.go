@@ -69,6 +69,10 @@ func TestExampleConfigLoads(t *testing.T) {
 func TestRejects(t *testing.T) {
 	cases := map[string]struct{ from, to, want string }{
 		"plaintext secret": {`"secret:kimi"`, `"sk-live-123"`, "holds a value"},
+		"passwd key":       {`ANTHROPIC_AUTH_TOKEN = "secret:kimi"`, `DB_PASSWD = "hunter2"`, "holds a value"},
+		"cookie key":       {`ANTHROPIC_AUTH_TOKEN = "secret:kimi"`, `SESSION_COOKIE = "abc"`, "holds a value"},
+		"dsn key":          {`ANTHROPIC_AUTH_TOKEN = "secret:kimi"`, `DATABASE_DSN = "postgres://u:p@h/db"`, "holds a value"},
+		"empty ref":        {`"secret:kimi"`, `"secret:"`, "holds a value"},
 		"worktree in repo": {`worktree_root = "/tmp/swarm-wt"`, `worktree_root = "/tmp/app/.swarm/wt"`, "inside repos.app"},
 		"bad merge":        {`merge = "ff"`, `merge = "push"`, "merge"},
 		"empty gate":       {`gate = ["go test ./..."]`, `gate = []`, "gate is empty"},

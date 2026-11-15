@@ -123,14 +123,20 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	if err != nil {
 		return err
 	}
-	if !gitx.IsAncestor(ctx, wt.Path, main, t.ResultCommit.String) {
-		return d.rebase(ctx, t, wt, main)
+	if !gitx.IsAncestor(ctx, r.Path, main, t.ResultCommit.String) {
+		return d.rebase(ctx, t, r, main)
 	}
 	if err := ffMain(ctx, r, t.ResultCommit.String, main); err != nil {
+		if now, herr := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch); herr == nil && now != main {
+			return nil // someone moved main meanwhile: next tick rebases onto it
+		}
 		return err
 	}
 	if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Merged, db.Patch{}); err != nil {
-		return err
+		// main already has the commit: never report this as a failed merge
+		d.DB.Event(ctx, "swarmd", t.ID, "merged_status_not_recorded", map[string]string{"commit": t.ResultCommit.String, "err": err.Error()})
+		d.Log.Error("merged, but the status move failed", "task", t.ID, "err", err)
+		return nil
 	}
 	d.DB.Event(ctx, "swarmd", t.ID, "merged", map[string]string{"commit": t.ResultCommit.String})
 	d.Log.Info("merged", "task", t.ID, "commit", t.ResultCommit.String)
@@ -172,11 +178,34 @@ func (d *Daemon) afterMerge(ctx context.Context, id int64, repo, path, commit st
 	}
 }
 
-// rebase: main moved since the gate. A clean rebase goes back through the gate on the new
-// commit; a conflict goes back to the worker without counting against it.
-func (d *Daemon) rebase(ctx context.Context, t db.Task, wt worktree.WT, main string) error {
-	if _, err := gitx.Run(ctx, wt.Path, "rebase", "--quiet", main); err != nil {
-		_, _ = gitx.Run(ctx, wt.Path, "rebase", "--abort")
+// maxRebaseConflicts: rebase conflicts send a task back to its worker without counting an
+// attempt (PRD §9), but not forever: past this many, the task is blocked for a person.
+const maxRebaseConflicts = 3
+
+// rebase: main moved since the gate. The submitted commit is rebased in a scratch worktree
+// the daemon owns, never in the worker's checkout (which may be dirty, or still in use).
+// Clean: back through the gate on the new commit. Conflict: back to the worker, up to a
+// cap. Any other git failure: blocked with the reason.
+func (d *Daemon) rebase(ctx context.Context, t db.Task, r config.Repo, main string) error {
+	dir := filepath.Join(d.Cfg.StatePath(), "rebase", fmt.Sprintf("T%d", t.ID))
+	_, _ = gitx.Run(ctx, r.Path, "worktree", "remove", "--force", dir)
+	_ = os.RemoveAll(dir)
+	if _, err := gitx.Run(ctx, r.Path, "worktree", "add", "--quiet", "--detach", dir, t.ResultCommit.String); err != nil {
+		return fmt.Errorf("rebase worktree: %w", err)
+	}
+	defer func() { _, _ = gitx.Run(context.WithoutCancel(ctx), r.Path, "worktree", "remove", "--force", dir) }()
+	if _, err := gitx.Run(ctx, dir, "rebase", "--quiet", main); err != nil {
+		_, _ = gitx.Run(ctx, dir, "rebase", "--abort")
+		if !strings.Contains(err.Error(), "CONFLICT") && !strings.Contains(err.Error(), "could not apply") {
+			return fmt.Errorf("rebase: %w", err) // not a conflict: blocked by the caller
+		}
+		n, err := d.DB.EventCount(ctx, t.ID, "rebase_conflict")
+		if err != nil {
+			return err
+		}
+		if n+1 >= maxRebaseConflicts {
+			return fmt.Errorf("rebase onto main conflicted %d times", n+1)
+		}
 		if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Ready, db.Patch{}); err != nil {
 			return err
 		}
@@ -184,11 +213,10 @@ func (d *Daemon) rebase(ctx context.Context, t db.Task, wt worktree.WT, main str
 		d.DB.Event(ctx, "swarmd", t.ID, "rebase_conflict", map[string]string{"main": main})
 		return nil
 	}
-	head, err := gitx.Head(ctx, wt.Path, "HEAD")
+	head, err := gitx.Head(ctx, dir, "HEAD")
 	if err != nil {
 		return err
 	}
-	// the task's base moves with it: its diff is now measured from the main it sits on
 	if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Verifying, db.Patch{ResultCommit: &head, Base: &main}); err != nil {
 		return err
 	}

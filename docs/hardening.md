@@ -89,3 +89,31 @@ they passed without the feature (the overlap test raced on its own lock; caught 
 disabling the check and seeing it stay green) and were rewritten until they went red. The
 notification test found a real loss: the last notification before exit (run done) was
 dropped because notify ran in an unawaited goroutine.
+
+# Review rounds (2026-11-15)
+
+**Round 1** (two reviewers: dispatch/db, board/gate/provider/CLI): 20 findings fixed in
+9791702. The worker boundary was then measured live: Claude Code read a file outside the
+worktree with no prompt, so explicit deny rules were added and re-measured (Read, cat and
+Write to a denied path all refused).
+
+**Round 2** (adversarial worker, lifecycle second pass, mutation testing):
+- The adversarial review found that deny rules bind Claude's own tools only: `go test`
+  runs the worker's code past them. Fixed with Claude Code's native OS sandbox, measured
+  live (cat of a denied file: Operation not permitted; curl: 403 from the sandbox proxy;
+  write outside: not permitted; swarm gate inside it: passes). The daemon's git no longer
+  runs hooks or filters a worker could plant in the shared .git.
+- Gate: protected paths, test runners taken over (TestMain, os.Exit, pytest collection
+  hooks), shrinking test files, a dead //go:build ignore pattern, files required.
+- Lifecycle: blocked was a dead end (retry/cancel added); rebase failures looped forever
+  (scratch-worktree rebase, conflict cap, non-conflict errors block); run close TOCTOU;
+  orphaned workers after a crash (pid recorded, killed at restart); prepare timeout;
+  applyStart on a task that left running; SIGKILL timer on a recycled pgid; WaitGroup
+  Add racing Wait; a successful merge reported as failed; promote without events.
+- Mutation testing: 49 of 107 planted bugs were caught. Tests added for the gaps that
+  matter most (claude command posture incl. sandbox, transition table, three-dot with main
+  moved, symlinked tests, grants, exact attempt counts, failure text in the next prompt,
+  rebase conflicts, retry/cancel, orphan kill by pid, Running(), slot ports, secret keys,
+  classification tables). Three flaky tests fixed (sleep as a handshake, pkill by pattern
+  that also hit leftovers from earlier runs, a timing-dependent merge test).
+- Socket limits: connection cap, bytes per connection, notes per task.

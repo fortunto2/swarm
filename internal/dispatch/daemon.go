@@ -30,6 +30,7 @@ import (
 )
 
 const (
+	prepareTimeout = 10 * time.Minute
 	tickEvery      = 2 * time.Second
 	lease          = 2 * time.Minute // extended every tick while the process lives
 	maxInfraFailed = 3               // a task the infrastructure fails 3 times goes to blocked, not round and round
@@ -44,6 +45,8 @@ type proc struct {
 	leaseUntil time.Time
 	slot       int
 	killed     bool // the wall clock ran out; waiting for the group to die
+	killedAt   time.Time
+	started    time.Time
 	log        string
 }
 
@@ -71,7 +74,12 @@ type Daemon struct {
 	wake     chan int64
 	bg       sync.WaitGroup // after-merge hooks: bounded by their timeout, awaited on exit
 	pruned   time.Time      // last git worktree prune
-	reg      registry       // provider states and spend, refreshed each schedule pass
+
+	prepCtx    context.Context // parent of every prepare; cancelled at shutdown
+	prepCancel context.CancelFunc
+	notifyMu   sync.Mutex
+	closing    bool     // set before bg.Wait: no bg.Add after it
+	reg        registry // provider states and spend, refreshed each schedule pass
 }
 
 func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
@@ -97,6 +105,7 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 		}
 		dm.adapters[id] = a
 	}
+	dm.prepCtx, dm.prepCancel = context.WithCancel(context.Background())
 	if len(dm.adapters) == 0 {
 		return nil, fmt.Errorf("no usable provider in profile %s", cfg.Profile.Name)
 	}
@@ -147,17 +156,17 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 			d.Log.Error("tick", "err", err)
 		}
 		if untilIdle && d.idle(ctx) {
-			d.bg.Wait()
+			d.waitBackground()
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			d.shutdown()
-			d.bg.Wait()
+			d.waitBackground()
 			return nil
 		case err := <-errc:
 			d.shutdown() // whatever ended the socket, no worker outlives the daemon
-			d.bg.Wait()
+			d.waitBackground()
 			if ctx.Err() != nil || err == nil {
 				return nil
 			}
@@ -228,8 +237,12 @@ func (d *Daemon) closeRuns(ctx context.Context) error {
 		if active > 0 {
 			continue
 		}
-		if err := d.DB.SetRunStatus(ctx, run, "done"); err != nil {
+		closed, err := d.DB.CloseRunIfSettled(ctx, run)
+		if err != nil {
 			return err
+		}
+		if !closed {
+			continue // a task arrived after the count
 		}
 		d.DB.Event(ctx, "swarmd", 0, "run_done", map[string]int64{"run": run})
 		d.Log.Info("run done", "run", run)
@@ -268,6 +281,18 @@ func (d *Daemon) locate(t db.Task) worktree.WT {
 // no attempt and no infra strike is counted. Verifying tasks need nothing: the gate map is
 // empty, so they are gated again on the first tick.
 func (d *Daemon) reconcile(ctx context.Context) error {
+	// Workers a crashed daemon left behind live in their own process groups: stop them
+	// before their tasks are handed to new workers in the same worktrees.
+	orphans, err := d.DB.OpenAttemptPids(ctx, d.Node)
+	if err != nil {
+		return err
+	}
+	for id, pgid := range orphans {
+		if syscall.Kill(-pgid, 0) == nil {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			d.DB.Event(ctx, "swarmd", id, "orphan_killed", map[string]int{"pgid": pgid})
+		}
+	}
 	running, err := d.DB.TasksIn(ctx, db.Running)
 	if err != nil {
 		return err
@@ -308,7 +333,9 @@ func (d *Daemon) pruneHourly(ctx context.Context) {
 // Lock: one daemon per profile. The lock is an flock on <state>/daemon.lock, released by
 // the kernel when the process dies, so a crash never leaves it stuck. A second daemon would
 // unlink the first one's socket and write the same database.
-func Lock(stateDir string) (release func(), err error) {
+func Lock(stateDir string) (release func(), err error) { return lock(stateDir, 20) }
+
+func lock(stateDir string, tries int) (release func(), err error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -316,7 +343,16 @@ func Lock(stateDir string) (release func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	var lerr error
+	for i := 0; i <= tries; i++ { // a CLI probing Running() holds it for microseconds
+		if i > 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if lerr = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); lerr == nil {
+			break
+		}
+	}
+	if lerr != nil {
 		f.Close()
 		return nil, fmt.Errorf("another swarm daemon holds this profile (%s)", stateDir)
 	}
@@ -325,10 +361,18 @@ func Lock(stateDir string) (release func(), err error) {
 
 // Running reports whether a daemon holds the profile's lock.
 func Running(stateDir string) bool {
-	release, err := Lock(stateDir)
+	release, err := lock(stateDir, 0)
 	if err != nil {
 		return true
 	}
 	release()
 	return false
+}
+
+// waitBackground: no notification may start once this begins (bg.Add after Wait races).
+func (d *Daemon) waitBackground() {
+	d.notifyMu.Lock()
+	d.closing = true
+	d.notifyMu.Unlock()
+	d.bg.Wait()
 }

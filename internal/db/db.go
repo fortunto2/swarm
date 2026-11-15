@@ -27,6 +27,8 @@ var migrations = []string{
 	// The run's base is wrong for a task that starts after others merged: its worktree would
 	// miss their code, and its diff would claim their files as its own.
 	`ALTER TABLE tasks ADD COLUMN base_commit TEXT;`,
+	// 2: the worker's process group, so a restart after a crash can stop orphaned workers
+	`ALTER TABLE attempts ADD COLUMN pid INTEGER;`,
 }
 
 type DB struct{ *sql.DB }

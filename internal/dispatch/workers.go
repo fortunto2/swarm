@@ -25,8 +25,12 @@ import (
 // that can no longer merge (failed, cancelled, split, needs a person) are blocked with the
 // reason, instead of waiting forever and holding their run open.
 func (d *Daemon) promote(ctx context.Context) error {
-	if err := d.DB.Promote(ctx); err != nil {
+	ready, err := d.DB.Promotable(ctx)
+	if err != nil {
 		return err
+	}
+	for _, id := range ready { // one guarded move each, so every transition is in the log
+		_ = d.DB.Move(ctx, "swarmd", id, []db.Status{db.Draft}, db.Ready, db.Patch{})
 	}
 	orphans, err := d.DB.DraftsWithDeadDeps(ctx)
 	if err != nil {
@@ -110,12 +114,14 @@ func (d *Daemon) schedule(ctx context.Context) error {
 		d.starting[t.ID] = starting{provider: pid, slot: slot}
 		adapter := d.adapters[pid] // read on the loop; disableProvider may delete it meanwhile
 		go func() {
+			pctx, cancel := context.WithTimeout(d.prepCtx, prepareTimeout) // a stuck checkout must not hold a slot forever
+			defer cancel()
 			defer func() {
 				if r := recover(); r != nil { // never strand a claimed task in starting
 					d.started <- started{taskID: t.ID, err: fmt.Errorf("prepare panicked: %v", r)}
 				}
 			}()
-			d.started <- d.prepare(ctx, t, adapter, pid, model, worker, slot)
+			d.started <- d.prepare(pctx, t, adapter, pid, model, worker, slot)
 		}()
 	}
 	return nil
@@ -176,7 +182,7 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapte
 		return fail(err)
 	}
 	now := time.Now()
-	return started{taskID: t.ID, model: model, p: &proc{cmd: cmd, token: tok, provider: pid, slot: slot, done: done, log: logPath,
+	return started{taskID: t.ID, model: model, p: &proc{cmd: cmd, token: tok, provider: pid, slot: slot, done: done, log: logPath, started: now,
 		leaseUntil: now.Add(lease), deadline: now.Add(d.Cfg.Limits.TaskWallClock.Duration)}}
 }
 
@@ -188,8 +194,23 @@ func (d *Daemon) applyStart(ctx context.Context, s started) {
 		d.fail(ctx, s.taskID, db.Running, infraFail, "crash", s.err.Error())
 		return
 	}
+	t, err := d.DB.GetTask(ctx, s.taskID)
+	if err != nil || t.Status != db.Running {
+		// the task left running while it was prepared (cancelled, reported): no worker for it
+		killGroup(s.p.cmd)
+		d.Board.Revoke(s.p.token)
+		go func() { <-s.p.done }()
+		return
+	}
+	if _, err := d.DB.StartAttempt(ctx, s.taskID, pid, s.model, d.Node, s.p.log); err != nil {
+		killGroup(s.p.cmd)
+		d.Board.Revoke(s.p.token)
+		go func() { <-s.p.done }()
+		d.fail(ctx, s.taskID, db.Running, infraFail, "crash", "could not record the attempt: "+err.Error())
+		return
+	}
+	_ = d.DB.SetAttemptPid(ctx, s.p.log, s.p.cmd.Process.Pid)
 	d.procs[s.taskID] = s.p
-	_, _ = d.DB.StartAttempt(ctx, s.taskID, pid, s.model, d.Node, s.p.log)
 	d.DB.Event(ctx, "swarmd", s.taskID, "started", map[string]string{"provider": pid, "log": s.p.log, "node": d.Node})
 	d.Log.Info("worker started", "task", s.taskID, "provider", pid)
 }
@@ -252,10 +273,14 @@ func (d *Daemon) reap(ctx context.Context) {
 			continue
 		default:
 		}
+		if p.killed && now.After(p.killedAt.Add(10*time.Second)) {
+			_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL) // done has not fired: still ours
+			continue
+		}
 		if now.After(p.deadline) && !p.killed {
 			// Killed, but kept until it is gone: re-queuing now would let a dying process
 			// and a new attempt write the same worktree. finish() counts the timeout.
-			p.killed = true
+			p.killed, p.killedAt = true, now
 			killGroup(p.cmd)
 			d.Board.Revoke(p.token)
 			continue
@@ -268,6 +293,19 @@ func (d *Daemon) reap(ctx context.Context) {
 	running, err := d.DB.TasksIn(ctx, db.Running)
 	if err != nil {
 		return
+	}
+	stillRunning := map[int64]bool{}
+	for _, t := range running {
+		stillRunning[t.ID] = true
+	}
+	for id, p := range d.procs { // a task cancelled under its worker: stop the worker
+		if !stillRunning[id] && !p.killed && now.Sub(p.started) > 5*time.Second {
+			if t, err := d.DB.GetTask(ctx, id); err == nil && t.Status == db.Cancelled {
+				p.killed, p.killedAt = true, now
+				killGroup(p.cmd)
+				d.Board.Revoke(p.token)
+			}
+		}
 	}
 	for _, t := range running {
 		_, live := d.procs[t.ID]
@@ -337,7 +375,16 @@ func (d *Daemon) notify(msg string) {
 	if d.Cfg.Profile.Notify == "" {
 		return
 	}
+	d.notifyMu.Lock()
+	if d.closing { // after Wait began, Add would race it: send now instead, bounded
+		d.notifyMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(ctx, "sh", "-c", d.Cfg.Profile.Notify+` "$1"`, "notify", msg).Run()
+		return
+	}
 	d.bg.Add(1) // awaited on exit: the last notification (run done) must not be lost
+	d.notifyMu.Unlock()
 	go func() {
 		defer d.bg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -400,18 +447,21 @@ func (d *Daemon) fail(ctx context.Context, id int64, from db.Status, kind failKi
 	d.Log.Warn(event, "task", id, "outcome", outcome, "status", to)
 }
 
+// killGroup sends SIGTERM to the worker's process group. SIGKILL follows from reap (or
+// shutdown) only while the process is still known to be alive: a timer fired later could
+// hit a recycled process group.
 func killGroup(cmd *exec.Cmd) {
 	if cmd.Process == nil {
 		return
 	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-	time.AfterFunc(10*time.Second, func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
 }
 
 // shutdown stops every worker before the daemon exits. Workers live in their own process
 // groups and would outlive it otherwise, writing worktrees the next daemon re-queues. Starts
 // still being prepared are awaited and killed too. SIGTERM, then SIGKILL after a grace.
 func (d *Daemon) shutdown() {
+	d.prepCancel() // starts still being prepared fail instead of launching a worker
 	wait := time.After(30 * time.Second)
 	for len(d.starting) > 0 {
 		select {

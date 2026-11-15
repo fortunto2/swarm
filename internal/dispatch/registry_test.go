@@ -36,3 +36,21 @@ func TestEligibleOrderRolesAndState(t *testing.T) {
 		t.Fatalf("eligible(A) = %v", got)
 	}
 }
+
+func TestRunningSeesTheLock(t *testing.T) {
+	dir := t.TempDir()
+	if Running(dir) {
+		t.Fatal("no daemon yet")
+	}
+	release, err := Lock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Running(dir) {
+		t.Fatal("a held lock reads as no daemon")
+	}
+	release()
+	if Running(dir) {
+		t.Fatal("a released lock still reads as a daemon")
+	}
+}

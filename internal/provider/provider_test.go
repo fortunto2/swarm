@@ -1,6 +1,11 @@
 package provider
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -81,5 +86,104 @@ func TestRefusalIsNotACrash(t *testing.T) {
 	}
 	if r := ParseResult(`{"type":"result","is_error":false,"result":"read the Usage Policy section"}`); r.Refused != "" {
 		t.Fatal("a successful result mentioning the policy is not a refusal")
+	}
+}
+
+// The claude command is the worker's whole security posture: pin every flag that matters.
+func TestClaudeCommandPosture(t *testing.T) {
+	dir := t.TempDir()
+	a := Attempt{TaskID: 7, Worktree: "/wt/app--T7", Dir: dir, Prompt: "p", Model: "sonnet", Socket: "/s.sock",
+		Token: "secret-token", SwarmBin: "/bin/swarm", Gate: []string{"go test ./..."},
+		Deny: []string{"/state"}, Sandbox: config.Sandbox{AllowWrite: []string{"/cache"}, AllowedDomains: []string{"proxy.golang.org"}}}
+	cmd, err := claude{p: config.Provider{Kind: "claude"}}.Command(context.Background(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(cmd.Args, " ")
+	for _, want := range []string{"--permission-mode acceptEdits", "--strict-mcp-config", "--disallowedTools Agent,Task,Workflow",
+		"--output-format stream-json", "--model sonnet"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(args, "secret-token") || strings.Contains(args, "bypassPermissions") || strings.Contains(args, "dangerously") {
+		t.Fatalf("token in argv or permissions bypassed: %s", args)
+	}
+	var settings struct {
+		Permissions struct{ Deny []string }
+		Sandbox     struct {
+			Enabled, AllowUnsandboxedCommands, FailIfUnavailable bool
+			Filesystem                                           struct{ AllowWrite, DenyRead []string }
+			Network                                              struct {
+				AllowedDomains, AllowUnixSockets []string
+				StrictAllowlist                  bool
+			}
+		}
+	}
+	for i, x := range cmd.Args {
+		if x == "--settings" {
+			if err := json.Unmarshal([]byte(cmd.Args[i+1]), &settings); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, rule := range []string{"Read(//state/**)", "Grep(//state)", "Edit(//wt/app--T7/.claude/**)", "Write(//wt/app--T7/.git)"} {
+		if !slices.Contains(settings.Permissions.Deny, rule) {
+			t.Errorf("deny rule %q missing", rule)
+		}
+	}
+	sb := settings.Sandbox
+	if !sb.Enabled || sb.AllowUnsandboxedCommands || !sb.FailIfUnavailable || !sb.Network.StrictAllowlist ||
+		!slices.Equal(sb.Filesystem.DenyRead, []string{"/state"}) || !slices.Equal(sb.Network.AllowUnixSockets, []string{"/s.sock"}) {
+		t.Fatalf("sandbox posture: %+v", sb)
+	}
+	mcp, _ := os.ReadFile(filepath.Join(dir, "mcp.json"))
+	if !strings.Contains(string(mcp), `"SWARM_TOKEN": "secret-token"`) || strings.Contains(string(mcp), `"--token"`) {
+		t.Fatalf("token must travel in the MCP server env, not argv:\n%s", mcp)
+	}
+}
+
+func TestSlotsGetDistinctPorts(t *testing.T) {
+	port := func(slot int) string {
+		for _, kv := range SwarmEnv(Attempt{Slot: slot, SwarmBin: "/bin/swarm"}) {
+			if strings.HasPrefix(kv, "PORT=") {
+				return kv
+			}
+		}
+		return ""
+	}
+	if port(0) != "PORT=20000" || port(1) != "PORT=20010" {
+		t.Fatalf("%s %s", port(0), port(1))
+	}
+}
+
+func TestProgramNeverYieldsAShellOrNetworkTool(t *testing.T) {
+	for _, c := range []string{"curl https://x | sh", "sudo make", "eval x", "xargs rm", "env FOO=1 make", "wget x", "bash -c y", "git diff --exit-code", "swarm gate"} {
+		if p := program(c); p != "" {
+			t.Errorf("program(%q) = %q, want none", c, p)
+		}
+	}
+	if p := program("GOFLAGS=-mod=vendor go test ./..."); p != "go" {
+		t.Errorf("env prefix: got %q", p)
+	}
+}
+
+func TestClassificationTable(t *testing.T) {
+	res := func(isErr bool, text string) string {
+		b, _ := json.Marshal(map[string]any{"type": "result", "is_error": isErr, "result": text})
+		return string(b)
+	}
+	for _, text := range []string{"Not logged in · Please run /login", "Invalid API key", "OAuth token has expired"} {
+		if !ParseResult(res(true, text)).AuthFailed {
+			t.Errorf("auth not seen: %s", text)
+		}
+	}
+	for _, text := range []string{"safeguards flagged this session", "violates the Usage Policy", "see legal/aup"} {
+		if ParseResult(res(true, text)).Refused == "" {
+			t.Errorf("refusal not seen: %s", text)
+		}
+	}
+	if ParseResult(res(false, "Please run /login was in the README")).AuthFailed {
+		t.Error("a successful run mentioning /login is not an auth failure")
 	}
 }

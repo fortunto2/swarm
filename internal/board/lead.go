@@ -149,3 +149,33 @@ func (s *Service) TaskNotes(ctx context.Context, tok string, task int64) ([]db.N
 	}
 	return s.DB.Notes(ctx, task, "", 10)
 }
+
+// RetryTask gives a blocked task (or one that needed a person) a fresh start: counters reset,
+// back to ready. Whoever retries has read why it stopped; the notes stay.
+func (s *Service) RetryTask(ctx context.Context, tok string, task int64) (any, error) {
+	id, err := s.lead(tok)
+	if err != nil {
+		return nil, err
+	}
+	zero := 0
+	if err := s.DB.Move(ctx, id.Actor(), task, []db.Status{db.Blocked, db.NeedsHuman}, db.Ready,
+		db.Patch{Attempts: &zero, InfraFailures: &zero}); err != nil {
+		return nil, &Error{"not_retryable", "only a blocked task or one waiting for a person can be retried"}
+	}
+	s.signal(task)
+	return map[string]any{"task": task, "status": "ready"}, nil
+}
+
+// CancelTask ends a task that will not be done. A running worker is stopped by the daemon.
+func (s *Service) CancelTask(ctx context.Context, tok string, task int64) (any, error) {
+	id, err := s.lead(tok)
+	if err != nil {
+		return nil, err
+	}
+	from := []db.Status{db.Draft, db.Ready, db.Running, db.Verifying, db.Review, db.Merging, db.Blocked, db.NeedsHuman}
+	if err := s.DB.Move(ctx, id.Actor(), task, from, db.Cancelled, db.Patch{ClearLease: true}); err != nil {
+		return nil, &Error{"not_cancellable", "the task is already settled (merged, cancelled, failed or split)"}
+	}
+	s.signal(task)
+	return map[string]any{"task": task, "status": "cancelled"}, nil
+}

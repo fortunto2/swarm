@@ -177,3 +177,34 @@ func TestMigrationsRunOnce(t *testing.T) {
 	}
 	d.Close()
 }
+
+// The transition table, pinned: a widened edge (merged -> ready, draft -> running) is a
+// change to the life cycle and must show up as a failing test, not slip in.
+func TestTransitionTableIsPinned(t *testing.T) {
+	want := map[Status][]Status{
+		Draft:      {Ready, Blocked, Cancelled},
+		Ready:      {Running, Cancelled},
+		Running:    {Verifying, Ready, Blocked, Cancelled},
+		Verifying:  {Review, Merging, Ready, Blocked, Cancelled},
+		Review:     {Merging, Ready, Blocked, Cancelled},
+		Merging:    {Merged, Verifying, Ready, Blocked, Cancelled},
+		Blocked:    {Ready, Split, NeedsHuman, Failed, Cancelled},
+		NeedsHuman: {Ready, Cancelled},
+	}
+	if len(want) != len(transitions) {
+		t.Fatalf("table has %d sources, want %d", len(transitions), len(want))
+	}
+	for from, tos := range want {
+		if fmt.Sprint(transitions[from]) != fmt.Sprint(tos) {
+			t.Errorf("%s -> %v, want %v", from, transitions[from], tos)
+		}
+	}
+	for _, s := range []Status{Merged, Split, Failed, Cancelled} {
+		if len(transitions[s]) != 0 {
+			t.Errorf("%s is terminal but has exits %v", s, transitions[s])
+		}
+	}
+	if fmt.Sprint(Settled) != fmt.Sprint([]Status{Merged, Split, Failed, Cancelled, NeedsHuman}) {
+		t.Errorf("Settled = %v: a blocked task must keep its run open", Settled)
+	}
+}

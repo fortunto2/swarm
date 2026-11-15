@@ -50,6 +50,27 @@ swarm status
 Try it without spending quota: a provider with `kind = "mock"` runs a script instead of a
 model, over the same board protocol (`cmd/swarm/e2e_test.go` has working scripts).
 
+## Safety model
+
+A worker is an agent with a shell, so it is treated as untrusted:
+
+- **OS sandbox** (Claude Code's own, Seatbelt on macOS, bubblewrap on Linux) around its Bash
+  and every process it starts: the profile's state, account dirs and key stores cannot be
+  read; writes go to its worktree and build caches only; the network is
+  `[sandbox] allowed_domains` only. A sandbox that cannot start fails the run.
+- **Permission rules** for Claude's own tools: the same paths denied, and the files that
+  configure an agent or git (`.claude/`, `.mcp.json`, `CLAUDE.md`, `.git`) not editable.
+- **The gate** decides, not the worker: every task declares the files it may write (`**`
+  for the whole repo, on purpose); deleted, skipped, focused or shrunk tests fail; so do
+  changes to agent, CI or git configuration unless the spec says `[allow-protected]`.
+- **The daemon's own git** runs nothing a worker could plant: hooks, fsmonitor and LFS
+  filters are off; gate commands get no credentials.
+- **The board** is a unix socket (0600) with a token per attempt, limits per connection,
+  and roles enforced per operation.
+
+Blocked tasks wait for a person: `swarm task retry <id>` (counters reset) or
+`swarm task cancel <id>` (a running worker is stopped), or the same through MCP.
+
 ## Dependencies
 
 A task can wait for others: `swarm task add --needs 3,4` (or `needs` in `swarm_add_task`).

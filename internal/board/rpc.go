@@ -3,6 +3,7 @@ package board
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/rpc"
 	"net/rpc/jsonrpc"
@@ -49,6 +50,7 @@ func Serve(ctx context.Context, sock string, s *Service) error {
 		return err
 	}
 	go func() { <-ctx.Done(); l.Close() }()
+	slots := make(chan struct{}, maxConns)
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -57,8 +59,42 @@ func Serve(ctx context.Context, sock string, s *Service) error {
 			}
 			return err
 		}
-		go srv.ServeCodec(jsonrpc.NewServerCodec(c))
+		select {
+		case slots <- struct{}{}:
+		default:
+			c.Close() // over the cap: a worker opening connections in a loop gets nothing
+			continue
+		}
+		go func() {
+			defer func() { <-slots }()
+			srv.ServeCodec(jsonrpc.NewServerCodec(&capped{Conn: c, left: maxConnBytes}))
+		}()
 	}
+}
+
+// Limits of the one door: a worker can be careless or hostile, and the daemon outlives it.
+const (
+	maxConns     = 256
+	maxConnBytes = 16 << 20 // per connection, total: an attempt's MCP server needs far less
+)
+
+// capped closes a connection that has sent more than its budget.
+type capped struct {
+	net.Conn
+	left int64
+}
+
+func (c *capped) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		c.Conn.Close()
+		return 0, io.EOF
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.Conn.Read(p)
+	c.left -= int64(n)
+	return n, err
 }
 
 // Client is the caller side of the socket.
