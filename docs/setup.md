@@ -189,3 +189,20 @@ no files named, an acceptance the gate cannot see, a file it needs not yet commi
   memory is low: a type check on a big TypeScript repo can take 3 GB, and a gate that dies
   of it is an attempt spent on nothing in the code.
 - `swarm report --since 7d`: what a week says; a weekly look at it is how the setup gets better.
+
+## 7. A second machine (nodes)
+
+One coordinator keeps the database and the queue; other machines join as nodes and run the
+workers of the accounts logged in there. Put the coordinator where it is always on (a small
+server), and let a laptop dial in when it is awake:
+
+1. On the coordinator: declare the machine and move its accounts to it
+   (`[nodes.laptop] host = "remote"`, `accounts = [...]`, `labels = [...]`).
+2. On the node: a small profile with `[node]` (its name, and the command that reaches the
+   coordinator, usually `ssh <host> swarm --profile <coordinator profile>`) and its copies
+   of the repos (`path`, `remote`), then `swarm --profile <it> node` under launchd or
+   systemd.
+3. `swarm status` on the coordinator shows the node online; `swarm task add --runs-on
+   <label>` sends work where it must run.
+
+The whole model, what crosses the link and what a node never does: [nodes.md](nodes.md).

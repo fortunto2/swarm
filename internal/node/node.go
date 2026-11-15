@@ -115,7 +115,7 @@ func (n *Node) Run(ctx context.Context) error {
 			return err
 		case <-time.After(backoff):
 		}
-		backoff = min(backoff*2, 2*time.Minute)
+		backoff = min(backoff*2, 30*time.Second) // a laptop waking up is back within half a minute
 	}
 	n.stopAll()
 	return nil

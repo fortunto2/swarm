@@ -205,6 +205,9 @@ command = ["/bin/false"]
 	if st := status(t, nodeProf); !strings.Contains(st, "node n1 (profile n1): running") {
 		t.Fatalf("a node profile's status:\n%s", st)
 	}
+	if out, _ := swarm(t, coord, 30*time.Second, "task", "list"); !strings.Contains(out, "n1") || !strings.Contains(out, "[runs_on far]") {
+		t.Fatalf("task list does not say where the task ran and what it asked for:\n%s", out)
+	}
 	if out, _ := swarm(t, coord, 30*time.Second, "providers"); !strings.Contains(out, "mock           n1") {
 		t.Fatalf("providers does not say mock runs on n1:\n%s", out)
 	}

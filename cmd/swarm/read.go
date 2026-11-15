@@ -49,7 +49,15 @@ func taskListCmd() *cobra.Command {
 					return nil
 				}
 				for _, r := range rows {
-					fmt.Fprintf(out, "T%-4d %-10s %-16s %d att  %s\n", r.ID, r.Status, r.Repo, r.Attempts, r.Title)
+					where := r.Node
+					if where == "" {
+						where = "-"
+					}
+					line := fmt.Sprintf("T%-4d %-10s %-16s %-8s %d att  %s", r.ID, r.Status, r.Repo, where, r.Attempts, r.Title)
+					if r.RunsOn != "" {
+						line += "  [runs_on " + r.RunsOn + "]"
+					}
+					fmt.Fprintln(out, line)
 				}
 				return nil
 			})
