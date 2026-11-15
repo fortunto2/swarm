@@ -157,6 +157,14 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapte
 		if err := d.DB.SetBase(ctx, t.ID, base); err != nil {
 			return fail(err)
 		}
+	} else if fresh, _ := untouched(ctx, wt.Path, base); fresh {
+		// A retry of a task that never committed anything: start it from main as it is now,
+		// or it keeps missing what merged since (seen live: a retried task could not see the
+		// files it was asked to test, committed after its first attempt).
+		if _, err := gitx.Run(ctx, wt.Path, "reset", "--quiet", "--hard", base); err != nil {
+			return fail(fmt.Errorf("refresh worktree: %w", err))
+		}
+		_ = d.DB.SetBase(ctx, t.ID, base)
 	}
 	dir := filepath.Join(d.Cfg.StatePath(), "attempts", worker)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -535,4 +543,14 @@ func overlapping(claims []string, inFlight map[int64][]string) int64 {
 		}
 	}
 	return 0
+}
+
+// untouched: the worktree has no commits of its own over main and no local changes.
+func untouched(ctx context.Context, wt, main string) (bool, error) {
+	ahead, err := gitx.Run(ctx, wt, "rev-list", "--count", main+"..HEAD")
+	if err != nil || ahead != "0" {
+		return false, err
+	}
+	dirty, err := gitx.Run(ctx, wt, "status", "--porcelain")
+	return err == nil && dirty == "", err
 }

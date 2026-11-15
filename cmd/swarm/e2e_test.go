@@ -862,3 +862,36 @@ func TestSessionMCPWithoutDaemon(t *testing.T) {
 		t.Fatalf("want a daemon_down tool error, got %v %+v", err, res)
 	}
 }
+
+// A retried task that never committed starts from main as it is now: what merged after its
+// first attempt (here: the file it needs) is in its worktree.
+func TestRetryStartsFromCurrentMain(t *testing.T) {
+	repo := testbed(t)
+	worker := `if [ ! -f needed.go ]; then swarm board blocked "needed.go is missing" "add it first?"; exit 0; fi
+printf 'package app\n\nfunc Uses() int { return Needed() }\n' > uses.go
+git add -A && git commit -qm "T$SWARM_TASK_ID: uses needed"
+swarm board done "$(git rev-parse HEAD)"
+`
+	prof := profile(t, repo, worker, 4)
+	addTask(t, prof, "uses.go")
+	if out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	sh(t, repo, `printf 'package app\n\nfunc Needed() int { return 7 }\n' > needed.go && git add -A && git commit -qm "the missing file"`)
+	daemon := exec.Command(bin, "--profile", prof, "daemon")
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() }()
+	waitSocket(t, prof)
+	if out, err := swarm(t, prof, 10*time.Second, "task", "retry", "1"); err != nil {
+		t.Fatalf("retry: %v\n%s", err, out)
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for !strings.Contains(status(t, prof), "merged       1") {
+		if time.Now().After(deadline) {
+			t.Fatalf("not merged after retry from the current main:\n%s", status(t, prof))
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
