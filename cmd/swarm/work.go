@@ -121,6 +121,11 @@ func daemonCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			release, err := dispatch.Lock(c.StatePath())
+			if err != nil {
+				return err
+			}
+			defer release()
 			dm, err := dispatch.New(c, d, self)
 			if err != nil {
 				return err
@@ -261,6 +266,13 @@ func gateCmd() *cobra.Command {
 func addViaDaemon(c *config.Config, in board.AddTaskIn) (run, id int64, viaDaemon bool, err error) {
 	cl, err := board.Dial(dispatch.SocketPath(c.StatePath()))
 	if err != nil {
+		if dispatch.Running(c.StatePath()) {
+			// never write around a live daemon: it is the only writer
+			return 0, 0, true, fmt.Errorf("a daemon holds this profile but its socket does not answer: %w", err)
+		}
+		if in.Title == "" || in.Spec == "" || in.Acceptance == "" {
+			return 0, 0, false, errors.New("title, spec and acceptance must not be empty")
+		}
 		return in.Run, 0, false, nil
 	}
 	defer cl.Close()

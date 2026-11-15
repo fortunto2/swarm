@@ -30,7 +30,7 @@ const (
 )
 
 var transitions = map[Status][]Status{
-	Draft:      {Ready, Cancelled},
+	Draft:      {Ready, Blocked, Cancelled},
 	Ready:      {Running, Cancelled},
 	Running:    {Verifying, Ready, Blocked, Cancelled},
 	Verifying:  {Review, Merging, Ready, Blocked, Cancelled},

@@ -584,3 +584,57 @@ func TestNotifiesBlockedAndRunDone(t *testing.T) {
 		}
 	}
 }
+
+// What merges is the gated commit, never the branch tip: a worker that keeps committing
+// after report_done (here: deleting a test) cannot slip that onto main.
+func TestMergesTheGatedCommitNotTheTip(t *testing.T) {
+	repo := testbed(t)
+	worker := goodWorker + `git rm -q one_test.go && git commit -qm "after report: drop a test"
+sleep 2
+`
+	prof := profile(t, repo, worker, 4)
+	addTask(t, prof, "")
+	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	sh(t, repo, "test -f one_test.go") // fails the test if the post-report commit landed
+	if msg := sh(t, repo, "git log -1 --format=%s main"); !strings.Contains(msg, "add Two") {
+		t.Fatalf("main tip is %q, want the gated commit", msg)
+	}
+}
+
+// One daemon per profile: a second one refuses instead of unlinking the first one's socket.
+func TestSecondDaemonRefuses(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, "sleep 30\n", 4)
+	first := exec.Command(bin, "--profile", prof, "daemon")
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Process.Signal(os.Interrupt); _ = first.Wait() }()
+	time.Sleep(300 * time.Millisecond)
+	out, err := swarm(t, prof, 10*time.Second, "daemon")
+	if err == nil || !strings.Contains(out, "another swarm daemon holds this profile") {
+		t.Fatalf("second daemon: %v\n%s", err, out)
+	}
+}
+
+// A task the model refuses goes to blocked at once with the reason, not round three
+// infrastructure retries (measured on a live run before this existed).
+func TestRefusedTaskBlocksWithoutRetries(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, `echo '{"type":"result","is_error":true,"result":"API Error: safeguards flagged this session (https://www.anthropic.com/legal/aup)"}'
+exit 1
+`, 4)
+	addTask(t, prof, "")
+	out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle")
+	if err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if strings.Count(out, "worker started") != 1 {
+		t.Fatalf("want one attempt, got:\n%s", out)
+	}
+	if st := status(t, prof); !strings.Contains(st, "blocked      1") {
+		t.Fatalf("want blocked:\n%s", st)
+	}
+}

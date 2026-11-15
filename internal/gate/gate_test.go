@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,5 +134,71 @@ func TestRunRerunsFlakyOnce(t *testing.T) {
 	}
 	if runs, _ := os.ReadFile(filepath.Join(d2, "runs")); string(runs) != "x\nx\n" {
 		t.Fatalf("want the failing command run twice (once + one rerun), got %q", runs)
+	}
+}
+
+// Each way of switching a test off, in a test file, is caught; the same words in app code
+// or in a sentence are not.
+func TestSkipDetection(t *testing.T) {
+	caught := []string{
+		"t.Skip(\"later\")", "tb.Skip()", "s.T().Skip()", "b.SkipNow()",
+		"@pytest.mark.skip", "pytest.skip(\"x\")", "self.skipTest(\"x\")", "@unittest.skip",
+		"it.skip('x', () => {})", "describe.only('x', () => {})", "xit('x', () => {})", "fit('x', () => {})",
+		"#[ignore]", "@Disabled", "@Ignore", "try XCTSkipIf(true)",
+	}
+	for _, line := range caught {
+		if switchedOff("+"+line) == "" {
+			t.Errorf("not caught: %s", line)
+		}
+	}
+	for _, line := range []string{"model.fit(x)", "pending := 3", "return it.done()"} {
+		if switchedOff("+"+line) != "" {
+			t.Errorf("false alarm: %s", line)
+		}
+	}
+	for _, f := range []string{"FooTest.java", "src/BarTests.swift", "a/b_spec.rb", "x.test.mjs", "__tests__/a.js", "pkg/a_test.go"} {
+		if !testFile.MatchString(f) {
+			t.Errorf("not a test file: %s", f)
+		}
+	}
+	if AllowsTestChanges("do not use [allow-test-changes] here") || !AllowsTestChanges("rewrite the suite\n[allow-test-changes]\n") {
+		t.Error("the marker must be a line of its own")
+	}
+}
+
+// A non-ASCII test file deleted is still a deleted test (git quotes such paths without -z).
+func TestDeletedNonASCIITest(t *testing.T) {
+	ctx := context.Background()
+	d, _ := repo(t)
+	write(t, d, "tests/é_test.go", "package a\n")
+	base := commit(t, d)
+	os.Remove(filepath.Join(d, "tests/é_test.go"))
+	v := Static(ctx, d, base, commit(t, d), nil, false)
+	if v.OK || v.Reason != "tests deleted" {
+		t.Fatalf("got %+v", v)
+	}
+}
+
+// The gate gives the code it runs no credentials.
+func TestGateEnvHasNoCredentials(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("GH_TOKEN", "gh-test")
+	d := t.TempDir()
+	if v := Run(context.Background(), d, []string{`env > seen`}, time.Minute, 0); !v.OK {
+		t.Fatal(v.Reason)
+	}
+	seen, _ := os.ReadFile(filepath.Join(d, "seen"))
+	if strings.Contains(string(seen), "sk-test") || strings.Contains(string(seen), "gh-test") {
+		t.Fatal("a credential reached the gate's processes")
+	}
+}
+
+// A child that escapes the process group and holds the output pipe does not hang the gate.
+func TestGateDoesNotHangOnEscapedChild(t *testing.T) {
+	d := t.TempDir()
+	start := time.Now()
+	v := Run(context.Background(), d, []string{`perl -MPOSIX -e 'POSIX::setsid(); sleep 60' & sleep 60`}, 300*time.Millisecond, 0)
+	if v.OK || time.Since(start) > 15*time.Second {
+		t.Fatalf("gate hung or passed: ok=%v after %v", v.OK, time.Since(start))
 	}
 }

@@ -2,6 +2,8 @@ package board
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,17 +19,28 @@ import (
 
 const OperatorTokenFile = "operator.token"
 
-// OperatorToken reads the profile's operator token, creating it on first use.
+// OperatorToken reads the profile's operator token, creating it on first use. Created with
+// O_EXCL (two first starts cannot write two different tokens) and kept at 0600.
 func OperatorToken(stateDir string) (string, error) {
 	p := filepath.Join(stateDir, OperatorTokenFile)
-	if b, err := os.ReadFile(p); err == nil && len(strings.TrimSpace(string(b))) >= 32 {
-		return strings.TrimSpace(string(b)), nil
-	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return "", err
 	}
-	tok := newToken()
-	return tok, os.WriteFile(p, []byte(tok+"\n"), 0o600)
+	if f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err == nil {
+		_, werr := f.WriteString(newToken() + "\n")
+		cerr := f.Close()
+		if werr != nil || cerr != nil {
+			_ = os.Remove(p)
+			return "", errors.Join(werr, cerr)
+		}
+	}
+	_ = os.Chmod(p, 0o600)
+	b, err := os.ReadFile(p)
+	tok := strings.TrimSpace(string(b))
+	if err != nil || len(tok) < 32 {
+		return "", fmt.Errorf("operator token at %s is unreadable or short", p)
+	}
+	return tok, nil
 }
 
 // IssueFixed registers a token the caller already holds (the operator token survives

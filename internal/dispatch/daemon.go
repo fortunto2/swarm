@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fortunto2/swarm/internal/board"
@@ -42,6 +43,7 @@ type proc struct {
 	deadline   time.Time
 	leaseUntil time.Time
 	slot       int
+	killed     bool // the wall clock ran out; waiting for the group to die
 	log        string
 }
 
@@ -150,10 +152,15 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 		}
 		select {
 		case <-ctx.Done():
-			d.stopAll()
+			d.shutdown()
 			d.bg.Wait()
 			return nil
 		case err := <-errc:
+			d.shutdown() // whatever ended the socket, no worker outlives the daemon
+			d.bg.Wait()
+			if ctx.Err() != nil || err == nil {
+				return nil
+			}
 			return fmt.Errorf("board socket: %w", err)
 		case <-t.C:
 		case <-d.wake:
@@ -296,4 +303,32 @@ func (d *Daemon) pruneHourly(ctx context.Context) {
 	for _, r := range d.Cfg.Repos {
 		_, _ = gitx.Run(ctx, r.Path, "worktree", "prune")
 	}
+}
+
+// Lock: one daemon per profile. The lock is an flock on <state>/daemon.lock, released by
+// the kernel when the process dies, so a crash never leaves it stuck. A second daemon would
+// unlink the first one's socket and write the same database.
+func Lock(stateDir string) (release func(), err error) {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(stateDir, "daemon.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("another swarm daemon holds this profile (%s)", stateDir)
+	}
+	return func() { f.Close() }, nil
+}
+
+// Running reports whether a daemon holds the profile's lock.
+func Running(stateDir string) bool {
+	release, err := Lock(stateDir)
+	if err != nil {
+		return true
+	}
+	release()
+	return false
 }

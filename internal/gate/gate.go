@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fortunto2/swarm/internal/envx"
 	"github.com/fortunto2/swarm/internal/gitx"
 )
 
@@ -25,11 +26,6 @@ type Verdict struct {
 	Tail   string   // last 4K of the failing output, for the next attempt
 	Flaky  []string // commands that failed, then passed on a rerun
 }
-
-// AllowTestsMarker in a task's spec lets it delete or skip tests (a task that rewrites a
-// suite). It lives in the spec, which the worker cannot edit, so a worker cannot grant
-// itself the permission.
-const AllowTestsMarker = "[allow-test-changes]"
 
 const tailBytes = 4096
 
@@ -43,16 +39,50 @@ func Tail(s string, n int) string {
 
 func tail(s string) string { return Tail(s, tailBytes) }
 
-var testFile = regexp.MustCompile(`(^|/)(test_[^/]*\.py|[^/]*_test\.(go|py)|[^/]*\.(test|spec)\.[jt]sx?|tests?/.*)$`)
+// testFile: paths that hold tests, across the stacks swarm meets (Go, Python, JS/TS, Rust,
+// Swift, Kotlin, Java, Ruby).
+var testFile = regexp.MustCompile(`(^|/)(` +
+	`test_[^/]*\.py|[^/]*_test\.(go|py)|` + // Go, Python
+	`[^/]*\.(test|spec)\.[cm]?[jt]sx?|__tests__/.*|` + // JS/TS
+	`[^/]*Tests?\.(java|kt|swift)|` + // JUnit, Kotlin, XCTest
+	`[^/]*_spec\.rb|` + // RSpec
+	`tests?/.*|spec/.*)$`)
 
-// Added lines that switch a test off. Language-agnostic on purpose: a false alarm costs a
-// retry, a silent skip costs a merged lie.
-var skipAdded = regexp.MustCompile(`(?m)^\+.*(\bt\.Skip(Now|f)?\(|@pytest\.mark\.(skip|xfail)|\b(it|describe|test)\.skip\(|#\[ignore\]|@unittest\.skip|@Disabled)`)
+// Added lines that switch a test off or narrow a run to a few tests. Language-agnostic on
+// purpose: a false alarm costs a retry, a silent skip costs a merged lie.
+var skipAdded = regexp.MustCompile(`(?m)^\+.*(` +
+	`\.Skip(Now|f)?\(|^\+//go:build ignore|` + // Go: t/b/tb/s.T().Skip, build-ignored test files
+	`@pytest\.mark\.(skip|xfail)|pytest\.skip\(|\.skipTest\(|@unittest\.skip|` + // Python
+	`\b(it|describe|test)\.(skip|only|todo)\(|` + // JS/TS
+	`#\[ignore\]|@Disabled|@Ignore\b|XCTSkip)`) // Rust, JUnit 5/4, XCTest
+
+// xit( / fit( / fdescribe( as a call of their own (start of line or after a space, ; or
+// paren), never as a method: `model.fit(` is not a focused test.
+var focusAdded = regexp.MustCompile(`(?m)^\+(?:.*[\s;(])?(xit|xdescribe|xtest|fit|fdescribe)\(`)
+
+// switchedOff returns the first added line that switches a test off or narrows a run.
+func switchedOff(diff string) string {
+	if m := skipAdded.FindString(diff); m != "" {
+		return m
+	}
+	return focusAdded.FindString(diff)
+}
+
+// AllowTestsMarker on a line of its own in a task's spec lets it delete or skip tests (a
+// task that rewrites a suite). The spec is not the worker's to edit, and a sentence that
+// merely mentions the marker does not count.
+const AllowTestsMarker = "[allow-test-changes]"
+
+var allowTests = regexp.MustCompile(`(?m)^\s*\[allow-test-changes\]\s*$`)
+
+// AllowsTestChanges: the spec grants the permission explicitly.
+func AllowsTestChanges(spec string) bool { return allowTests.MatchString(spec) }
 
 // Static checks run without a model: the change stays inside the task's files, and no test
-// is deleted or switched off unless the spec allows it.
-func Static(ctx context.Context, wt, base, commit string, claims []string, allowTestChanges bool) Verdict {
-	files, err := gitx.ChangedFiles(ctx, wt, base, commit)
+// is deleted or switched off unless the spec allows it. The change is measured against
+// main as it is now (three-dot: from the merge-base), so it is the task's own change only.
+func Static(ctx context.Context, wt, main, commit string, claims []string, allowTestChanges bool) Verdict {
+	files, err := gitx.ChangedFiles(ctx, wt, main, commit)
 	if err != nil {
 		return Verdict{Stage: "static", Reason: "diff failed", Tail: err.Error()}
 	}
@@ -64,7 +94,7 @@ func Static(ctx context.Context, wt, base, commit string, claims []string, allow
 		if len(claims) > 0 && !slices.ContainsFunc(claims, func(c string) bool { return owns(c, f) }) {
 			outside = append(outside, f)
 		}
-		if st == "D" && testFile.MatchString(f) {
+		if (st == "D" || st == "T") && testFile.MatchString(f) { // T: replaced by a symlink
 			deletedTests = append(deletedTests, f)
 		}
 	}
@@ -80,11 +110,22 @@ func Static(ctx context.Context, wt, base, commit string, claims []string, allow
 	if len(deletedTests) > 0 {
 		return Verdict{Stage: "static", Reason: "tests deleted", Tail: "deleted: " + strings.Join(deletedTests, ", ")}
 	}
-	diff, err := gitx.Run(ctx, wt, "diff", "-U0", base, commit)
+	// only test files are searched for switched-off tests: `model.fit(` in app code is fine
+	var tests []string
+	for f := range files {
+		if testFile.MatchString(f) {
+			tests = append(tests, f)
+		}
+	}
+	if len(tests) == 0 {
+		return Verdict{OK: true, Stage: "static"}
+	}
+	slices.Sort(tests)
+	diff, err := gitx.Run(ctx, wt, append([]string{"diff", "-U0", main + "..." + commit, "--"}, tests...)...)
 	if err != nil {
 		return Verdict{Stage: "static", Reason: "diff failed", Tail: err.Error()}
 	}
-	if m := skipAdded.FindString(diff); m != "" {
+	if m := switchedOff(diff); m != "" {
 		return Verdict{Stage: "static", Reason: "a test was switched off", Tail: "added: " + strings.TrimSpace(m)}
 	}
 	return Verdict{OK: true, Stage: "static"}
@@ -135,29 +176,26 @@ func Run(ctx context.Context, wt string, cmds []string, timeout time.Duration, r
 
 func runOne(ctx context.Context, wt, c string, timeout time.Duration) Verdict {
 	var out bytes.Buffer
-	cmd := exec.Command("sh", "-c", c)
+	cmd := exec.CommandContext(ctx, "sh", "-c", c)
 	cmd.Dir = wt
+	cmd.Env = envx.Clean() // the gate runs the worker's code: it gets no credentials either
 	cmd.Stdout, cmd.Stderr = &out, &out
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return Verdict{Stage: "gate", Reason: c + ": " + err.Error()}
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			var ee *exec.ExitError
-			code := -1
-			if errors.As(err, &ee) {
-				code = ee.ExitCode()
-			}
-			return Verdict{Stage: "gate", Reason: fmt.Sprintf("%s: exit %d", c, code), Tail: tail(out.String())}
-		}
-		return Verdict{OK: true, Stage: "gate"}
-	case <-ctx.Done():
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	// A child that left the group (setsid) can hold the output pipe forever: stop waiting
+	// for it after this, or one stray daemon in a test wedges the gate queue.
+	cmd.WaitDelay = 5 * time.Second
+	err := cmd.Run()
+	if ctx.Err() != nil {
 		return Verdict{Stage: "gate", Reason: c + ": timeout after " + timeout.String(), Tail: tail(out.String())}
 	}
+	if err != nil {
+		var ee *exec.ExitError
+		code := -1
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		}
+		return Verdict{Stage: "gate", Reason: fmt.Sprintf("%s: exit %d", c, code), Tail: tail(out.String())}
+	}
+	return Verdict{OK: true, Stage: "gate"}
 }

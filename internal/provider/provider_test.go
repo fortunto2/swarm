@@ -22,7 +22,7 @@ func TestParseResultTakesTheLastResult(t *testing.T) {
 }
 
 func TestAllowedToolsNoPush(t *testing.T) {
-	a := Attempt{Gate: []string{"go vet ./...", "go test ./...", "make lint", "sh -c 'x'", "cd sub && cargo test", "CGO_ENABLED=0 go build ./..."},
+	a := Attempt{Gate: []string{"go vet ./...", "go test ./...", "make lint", "sh -c 'x'", "cd sub && cargo test", "CGO_ENABLED=0 go build ./...", "git diff --exit-code"},
 		ExtraMCP: map[string]config.MCPServer{"solograph": {Command: "x"}}}
 	got := strings.Join(AllowedTools(a, []string{"Bash(npm ci:*)"}), " ")
 	for _, want := range []string{"mcp__board__*", "mcp__solograph__*", "Bash(go:*)", "Bash(make:*)", "Bash(npm ci:*)", "Bash(swarm gate:*)"} {
@@ -33,6 +33,11 @@ func TestAllowedToolsNoPush(t *testing.T) {
 	if strings.Contains(got, "Bash(sh:*)") || strings.Contains(got, "Bash(cd:*)") || strings.Contains(got, "CGO_ENABLED") {
 		t.Fatalf("a shell, cd or env prefix became a rule: %s", got)
 	}
+	for _, bad := range []string{"Read", "Write", "Edit", "Bash(cat:*)", "Bash(ls:*)", "git diff", "git log", "git show"} {
+		if strings.Contains(" "+got+" ", " "+bad+" ") || strings.Contains(got, bad+":") {
+			t.Errorf("%s allowed: it reaches outside the worktree or writes via --output", bad)
+		}
+	}
 	if strings.Contains(got, "push") || strings.Contains(got, "Bash(git:*)") {
 		t.Fatalf("push reachable: %s", got)
 	}
@@ -41,8 +46,13 @@ func TestAllowedToolsNoPush(t *testing.T) {
 func TestCleanEnvDropsAccountVars(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/other/account")
 	t.Setenv("ANTHROPIC_API_KEY", "x")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "x")
+	t.Setenv("GH_TOKEN", "x")
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/agent")
 	for _, kv := range CleanEnv() {
-		if strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") || strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "CLAUDE_CONFIG_DIR" || k == "ANTHROPIC_API_KEY" || k == "CLAUDE_CODE_USE_BEDROCK" || k == "AWS_SECRET_ACCESS_KEY" || k == "GH_TOKEN" || k == "SSH_AUTH_SOCK" {
 			t.Fatalf("leaked %s", kv)
 		}
 	}
@@ -61,5 +71,15 @@ func TestAuthOnlyFromTheFinalResult(t *testing.T) {
 	}
 	if !ParseResult("Not logged in\n").AuthFailed {
 		t.Fatal("plain-text login error with no result event not seen")
+	}
+}
+
+func TestRefusalIsNotACrash(t *testing.T) {
+	log := `{"type":"result","is_error":true,"result":"API Error: Sonnet 5.5's safeguards flagged this session (https://www.anthropic.com/legal/aup)."}`
+	if r := ParseResult(log); r.Refused == "" || r.AuthFailed {
+		t.Fatalf("%+v", r)
+	}
+	if r := ParseResult(`{"type":"result","is_error":false,"result":"read the Usage Policy section"}`); r.Refused != "" {
+		t.Fatal("a successful result mentioning the policy is not a refusal")
 	}
 }

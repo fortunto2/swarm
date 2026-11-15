@@ -38,7 +38,8 @@ type Profile struct {
 	Notify       string   `toml:"notify" json:"notify,omitempty"`               // command that takes the message as last arg
 	Harness      string   `toml:"harness" json:"harness,omitempty"`             // harness-core profile dir, for runs.jsonl
 	SecretCmd    []string `toml:"secret_cmd" json:"secret_cmd,omitempty"`       // resolves secret:<name>: argv + name, value on stdout
-	ProjectRules string   `toml:"project_rules" json:"project_rules,omitempty"` // file appended to every worker prompt (prompts/project.md)
+	ProjectRules string   `toml:"project_rules" json:"project_rules,omitempty"`
+	DenyPaths    []string `toml:"deny_paths" json:"deny_paths,omitempty"` // extra paths workers may not read or edit // file appended to every worker prompt (prompts/project.md)
 }
 
 type Repo struct {
@@ -123,7 +124,7 @@ var (
 	merges        = []string{"ff", "pr"}
 	roles         = []string{"supervisor", "tree", "tick", "script", "event"}
 	providerRoles = []string{"worker", "reviewer", "lead"}
-	secretKey     = regexp.MustCompile(`(?i)(TOKEN|KEY|SECRET|PASSWORD)`)
+	secretKey     = regexp.MustCompile(`(?i)(TOKEN|KEY|SECRET|PASSW|CREDENTIAL|AUTH|DSN|COOKIE|SESSION)`)
 	refPattern    = regexp.MustCompile(`^(secret|env):[A-Za-z0-9_./-]+$`)
 )
 
@@ -337,6 +338,9 @@ func (c *Config) resolvePaths() {
 	c.Profile.StateDir = abs(c.Profile.StateDir)
 	c.Profile.WorktreeRoot = abs(c.Profile.WorktreeRoot)
 	c.Profile.ProjectRules = abs(c.Profile.ProjectRules)
+	for i, p := range c.Profile.DenyPaths {
+		c.Profile.DenyPaths[i] = abs(p)
+	}
 	for n, r := range c.Repos {
 		r.Path = abs(r.Path)
 		c.Repos[n] = r
@@ -384,4 +388,25 @@ func (r Repo) Reruns() int {
 		return 1
 	}
 	return *r.GateReruns
+}
+
+// WorkerDeny: paths a worker may neither read nor edit. The profile's state (operator token,
+// database, attempt dirs with resolved MCP env), every provider's account dir, the usual
+// key stores, and whatever the profile adds.
+func (c *Config) WorkerDeny() []string {
+	home, _ := os.UserHomeDir()
+	out := []string{c.Profile.StateDir}
+	for _, p := range c.Providers {
+		for _, d := range []string{p.ConfigDir, p.Home} {
+			if d != "" {
+				out = append(out, d)
+			}
+		}
+	}
+	for _, d := range []string{".ssh", ".aws", ".gnupg", ".netrc", ".config/gh", ".docker", ".kube", "Library/Keychains", ".swarm/accounts"} {
+		out = append(out, filepath.Join(home, d))
+	}
+	out = append(out, c.Profile.DenyPaths...)
+	slices.Sort(out)
+	return slices.Compact(out)
 }

@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/fortunto2/swarm/internal/config"
+	"github.com/fortunto2/swarm/internal/envx"
 )
 
 // Attempt is everything a worker process needs. Dir holds the prompt, the MCP config and
@@ -33,15 +34,33 @@ type Attempt struct {
 	ExtraMCP map[string]config.MCPServer
 	Gate     []string // the repo's gate commands; their programs are allowed to run
 	Slot     int      // the worker's slot: its port range and anything else that must not collide
+	Deny     []string // absolute paths the worker may neither read nor edit (state, accounts, keys)
+}
+
+// DenySettings: Claude Code reads files anywhere unless told otherwise (measured: a worker
+// read /tmp/... outside its worktree with no prompt), so the paths that hold credentials
+// are denied explicitly, for reading and editing. "//" marks an absolute path in a rule.
+func DenySettings(paths []string) string {
+	var rules []string
+	for _, p := range paths {
+		p = strings.TrimSuffix(p, "/")
+		for _, tool := range []string{"Read", "Edit", "Write", "Glob", "Grep"} {
+			rules = append(rules, tool+"(/"+p+"/**)", tool+"(/"+p+")")
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"permissions": map[string]any{"deny": rules}})
+	return string(b)
 }
 
 // AllowedTools: with no sandbox and nobody to answer a prompt, a worker may run only what
-// its job needs. git push is not in the list on purpose.
+// its job needs. File tools are absent: acceptEdits already allows editing inside the
+// working directory; reading is allowed anywhere by the CLI, which is why credential paths
+// get explicit deny rules (DenySettings). git diff/log/show are out: --output writes
+// anywhere. No push.
 func AllowedTools(a Attempt, extra []string) []string {
-	base := []string{"mcp__board__*", "Read", "Write", "Edit", "Glob", "Grep",
+	base := []string{"mcp__board__*",
 		"Bash(swarm gate:*)", "Bash(swarm board:*)",
-		"Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(git diff:*)",
-		"Bash(git log:*)", "Bash(git rev-parse:*)", "Bash(git show:*)", "Bash(ls:*)", "Bash(cat:*)"}
+		"Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(git rev-parse:*)"}
 	var derived []string
 	for name := range a.ExtraMCP {
 		derived = append(derived, "mcp__"+name+"__*")
@@ -66,7 +85,9 @@ func program(cmdline string) string {
 			continue
 		}
 		switch f {
-		case "sh", "bash", "zsh", "cd", "env", "exec", "sudo", "eval", "xargs":
+		// shells and wrappers would allow anything; git and swarm have their own narrow
+		// rules above (a gate command `git diff --exit-code` must not become git:*)
+		case "sh", "bash", "zsh", "cd", "env", "exec", "sudo", "eval", "xargs", "git", "swarm", "curl", "wget":
 			return ""
 		}
 		return f
@@ -157,6 +178,9 @@ func (c claude) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
 		"--disallowedTools", "Agent,Task,Workflow",
 		"--allowedTools", strings.Join(AllowedTools(a, c.p.AllowedTools), ","),
 		"--permission-mode", "acceptEdits"}
+	if len(a.Deny) > 0 {
+		args = append(args, "--settings", DenySettings(a.Deny))
+	}
 	if c.p.SettingSources != "" {
 		args = append(args, "--setting-sources", c.p.SettingSources)
 	}
@@ -200,22 +224,9 @@ func WriteMCPConfig(ctx context.Context, a Attempt, prof config.Profile) (string
 	return path, os.WriteFile(path, b, 0o600)
 }
 
-// inherited is what a worker must never pick up from the daemon's environment: it would
-// silently run on another account (CLAUDE_CONFIG_DIR) or switch a subscription worker to
-// API billing (ANTHROPIC_API_KEY). A provider that wants one sets it in its own env.
-var inherited = []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-	"ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "SWARM_PROFILE"}
-
-func CleanEnv() []string {
-	var out []string
-	for _, kv := range os.Environ() {
-		k, _, _ := strings.Cut(kv, "=")
-		if !slices.Contains(inherited, k) {
-			out = append(out, kv)
-		}
-	}
-	return out
-}
+// CleanEnv: the worker's base environment, without accounts, billing routes or credentials
+// (see envx).
+func CleanEnv() []string { return envx.Clean() }
 
 // baseCmd: the process every adapter starts from. In the worktree, with a clean
 // environment, the provider's resolved env and the swarm identity.
@@ -255,9 +266,14 @@ func (m mock) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
 type Result struct {
 	TokensIn, TokensOut int64
 	CostUSD             float64
-	Known               bool // a final result event was found
-	AuthFailed          bool // the CLI could not log in: not the task's fault, the provider is out
+	Known               bool   // a final result event was found
+	AuthFailed          bool   // the CLI could not log in: not the task's fault, the provider is out
+	Refused             string // the model refused the task under its usage policy: retrying will not help
 }
+
+// refusalPatterns: the CLI's wording when a session is stopped by the model's safeguards.
+// Measured 2026-11-15: "API Error: Sonnet 5.5's safeguards flagged this session (…aup)".
+var refusalPatterns = []string{"safeguards flagged", "Usage Policy", "legal/aup"}
 
 // authPatterns are matched against the final result's text only, never the whole log: a
 // worker that greps a file mentioning /login must not take its provider down.
@@ -294,6 +310,9 @@ func ParseResult(log string) Result {
 		}
 		r = Result{TokensIn: e.Usage.In + e.Usage.CacheRead + e.Usage.CacheCreate, TokensOut: e.Usage.Out,
 			CostUSD: e.Cost, Known: true, AuthFailed: e.IsError && authText(e.Text)}
+		if e.IsError && slices.ContainsFunc(refusalPatterns, func(p string) bool { return strings.Contains(e.Text, p) }) {
+			r.Refused = e.Text
+		}
 	}
 	if !r.Known && len(lines) > 0 {
 		r.AuthFailed = authText(lines[len(lines)-1])

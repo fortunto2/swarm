@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -32,17 +33,17 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		base, err := d.DB.TaskBase(ctx, t)
+		main, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
 		if err != nil {
 			return err
 		}
 		claims, _ := d.DB.WriteClaims(ctx, t.ID)
 		d.gating[t.ID] = true
 		id, commit := t.ID, t.ResultCommit.String
-		allow := strings.Contains(t.Spec, gate.AllowTestsMarker)
+		allow := gate.AllowsTestChanges(t.Spec)
 		dir := filepath.Join(d.Cfg.StatePath(), "gates", fmt.Sprintf("T%d-%.12s", id, commit))
 		go func() {
-			v := gate.Static(ctx, r.Path, base, commit, claims, allow)
+			v := gate.Static(ctx, r.Path, main, commit, claims, allow)
 			if v.OK {
 				v = runGate(ctx, r, dir, commit)
 			}
@@ -57,6 +58,10 @@ func (d *Daemon) startGates(ctx context.Context) error {
 // checkout (its untracked files, its build output, its HEAD) is never touched, and a
 // re-gate after a rebase is the same operation.
 func runGate(ctx context.Context, r config.Repo, dir, commit string) gate.Verdict {
+	// a gate killed with the daemon leaves its worktree behind; clear it, or this check fails
+	_, _ = gitx.Run(ctx, r.Path, "worktree", "remove", "--force", dir)
+	_ = os.RemoveAll(dir)
+	_, _ = gitx.Run(ctx, r.Path, "worktree", "prune")
 	if _, err := gitx.Run(ctx, r.Path, "worktree", "add", "--quiet", "--detach", dir, commit); err != nil {
 		return gate.Verdict{Stage: "gate", Reason: "could not check out the submitted commit", Tail: err.Error()}
 	}
@@ -121,7 +126,7 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	if !gitx.IsAncestor(ctx, wt.Path, main, t.ResultCommit.String) {
 		return d.rebase(ctx, t, wt, main)
 	}
-	if err := ffMain(ctx, r, wt.Branch, main); err != nil {
+	if err := ffMain(ctx, r, t.ResultCommit.String, main); err != nil {
 		return err
 	}
 	if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Merged, db.Patch{}); err != nil {
@@ -191,18 +196,15 @@ func (d *Daemon) rebase(ctx context.Context, t db.Task, wt worktree.WT, main str
 	return nil
 }
 
-// ffMain moves main to the branch only as a fast-forward. When main is checked out in the
+// ffMain moves main to the gated commit, never the branch tip (a worker may have committed
+// after report_done), only as a fast-forward. When main is checked out in the
 // repo, git merge --ff-only updates the working tree too (and refuses if it would clobber
 // local edits); otherwise update-ref with the old value is a compare-and-swap.
-func ffMain(ctx context.Context, r config.Repo, branch, oldMain string) error {
+func ffMain(ctx context.Context, r config.Repo, commit, oldMain string) error {
 	if gitx.CurrentBranch(ctx, r.Path) == r.MainBranch {
-		_, err := gitx.Run(ctx, r.Path, "merge", "--ff-only", "--quiet", branch)
+		_, err := gitx.Run(ctx, r.Path, "merge", "--ff-only", "--quiet", commit)
 		return err
 	}
-	tip, err := gitx.Head(ctx, r.Path, "refs/heads/"+branch)
-	if err != nil {
-		return err
-	}
-	_, err = gitx.Run(ctx, r.Path, "update-ref", "refs/heads/"+r.MainBranch, tip, oldMain)
+	_, err := gitx.Run(ctx, r.Path, "update-ref", "refs/heads/"+r.MainBranch, commit, oldMain)
 	return err
 }

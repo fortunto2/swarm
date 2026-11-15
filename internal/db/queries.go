@@ -97,6 +97,10 @@ func (d *DB) AddTask(ctx context.Context, n NewTask) (int64, error) {
 		return 0, err
 	}
 	id, _ := r.LastInsertId()
+	// a run closed before this task arrived is open again: its done event comes later
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status='running' WHERE id=? AND status='done'`, n.RunID); err != nil {
+		return 0, err
+	}
 	for _, f := range n.Files {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO file_claims(path, task_id, mode) VALUES(?, ?, 'write')`, f, id); err != nil {
 			return 0, err
@@ -191,16 +195,8 @@ func (d *DB) EndAttempt(ctx context.Context, taskID int64, outcome string) {
 		SELECT id FROM attempts WHERE task_id=? AND outcome IS NULL ORDER BY id DESC LIMIT 1)`, outcome, taskID)
 }
 
-// TaskBase: the commit a task's changes are measured from. Its own base once it has a
-// worktree; before that (or in a database from before migration 1), the run's.
-func (d *DB) TaskBase(ctx context.Context, t Task) (string, error) {
-	if t.Base.Valid && t.Base.String != "" {
-		return t.Base.String, nil
-	}
-	return d.RunBase(ctx, t.RunID)
-}
-
-// SetBase records where a task's new worktree was branched from (no status change).
+// SetBase records where a task's new worktree was branched from (no status change). For
+// the record only: the gate measures a change from its merge-base with main.
 func (d *DB) SetBase(ctx context.Context, id int64, base string) error {
 	_, err := d.ExecContext(ctx, `UPDATE tasks SET base_commit=? WHERE id=?`, base, id)
 	return err
@@ -418,4 +414,31 @@ func (d *DB) RunningByProvider(ctx context.Context) (map[string]int, error) {
 func (d *DB) WarmProvider(ctx context.Context, id string) error {
 	_, err := d.ExecContext(ctx, `UPDATE providers SET state='ok', cooling_until=NULL WHERE id=? AND state='cooling'`, id)
 	return err
+}
+
+// AttemptCount: attempts a task has had, of any outcome.
+func (d *DB) AttemptCount(ctx context.Context, taskID int64) (int, error) {
+	var n int
+	err := d.QueryRowContext(ctx, `SELECT count(*) FROM attempts WHERE task_id=?`, taskID).Scan(&n)
+	return n, err
+}
+
+// DraftsWithDeadDeps: drafts with a dependency that can no longer merge, and that dependency.
+func (d *DB) DraftsWithDeadDeps(ctx context.Context) (map[int64]int64, error) {
+	rows, err := d.QueryContext(ctx, `SELECT t.id, n.id FROM tasks t JOIN deps ON deps.task_id=t.id
+		JOIN tasks n ON n.id=deps.needs_id
+		WHERE t.status='draft' AND n.status IN ('failed','cancelled','split','needs_human')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]int64{}
+	for rows.Next() {
+		var id, dep int64
+		if err := rows.Scan(&id, &dep); err != nil {
+			return nil, err
+		}
+		out[id] = dep
+	}
+	return out, rows.Err()
 }

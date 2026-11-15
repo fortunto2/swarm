@@ -30,17 +30,20 @@ func IsAncestor(ctx context.Context, dir, a, b string) bool {
 	return err == nil
 }
 
-// ChangedFiles between two commits, with status letters (A, M, D, R...).
-func ChangedFiles(ctx context.Context, dir, from, to string) (map[string]string, error) {
-	out, err := Run(ctx, dir, "diff", "--name-status", "--no-renames", from, to)
+// ChangedFiles: what `to` adds over its merge-base with `upstream` (git diff a...b), with
+// status letters (A, M, D). Three dots on purpose: a branch's own change, whether or not it
+// was rebased, branched from an older main, or merged main in.
+func ChangedFiles(ctx context.Context, dir, upstream, to string) (map[string]string, error) {
+	// -z: paths come raw, NUL-separated; without it git quotes non-ASCII names and a
+	// deleted "tests/é_test.go" would match nothing.
+	out, err := Run(ctx, dir, "diff", "--name-status", "--no-renames", "-z", upstream+"..."+to)
 	if err != nil {
 		return nil, err
 	}
 	m := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		if f := strings.SplitN(line, "\t", 2); len(f) == 2 {
-			m[f[1]] = f[0]
-		}
+	f := strings.Split(strings.Trim(out, "\x00"), "\x00")
+	for i := 0; i+1 < len(f); i += 2 {
+		m[f[i+1]] = f[i]
 	}
 	return m, nil
 }

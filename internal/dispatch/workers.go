@@ -21,7 +21,27 @@ import (
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
-func (d *Daemon) promote(ctx context.Context) error { return d.DB.Promote(ctx) }
+// promote: drafts whose dependencies all merged become ready; drafts with a dependency
+// that can no longer merge (failed, cancelled, split, needs a person) are blocked with the
+// reason, instead of waiting forever and holding their run open.
+func (d *Daemon) promote(ctx context.Context) error {
+	if err := d.DB.Promote(ctx); err != nil {
+		return err
+	}
+	orphans, err := d.DB.DraftsWithDeadDeps(ctx)
+	if err != nil {
+		return err
+	}
+	for id, dep := range orphans {
+		if d.DB.Move(ctx, "swarmd", id, []db.Status{db.Draft}, db.Blocked, db.Patch{}) != nil {
+			continue
+		}
+		t, _ := d.DB.GetTask(ctx, id)
+		_ = d.DB.Note(ctx, t.RunID, id, "swarmd", "review", fmt.Sprintf("dependency T%d will not merge", dep))
+		d.notify(fmt.Sprintf("swarm %s: T%d %q blocked: its dependency T%d will not merge", d.Cfg.Profile.Name, id, t.Title, dep))
+	}
+	return nil
+}
 
 func (d *Daemon) maxWorkers() int {
 	if n, ok := d.Cfg.Nodes[d.Node]; ok && n.MaxWorkers > 0 && n.MaxWorkers < d.Cfg.Limits.MaxWorkers {
@@ -57,6 +77,9 @@ func (d *Daemon) schedule(ctx context.Context) error {
 		if t.NotBefore.Valid && t.NotBefore.Int64 > now {
 			continue
 		}
+		if _, alive := d.procs[t.ID]; alive {
+			continue // the previous attempt's process has not exited yet: one worker per task
+		}
 		claims, err := d.DB.WriteClaims(ctx, t.ID)
 		if err != nil {
 			return err
@@ -70,7 +93,11 @@ func (d *Daemon) schedule(ctx context.Context) error {
 		}
 		p := d.Cfg.Providers[pid]
 		model := p.Models[t.Tier]
-		worker := fmt.Sprintf("%s-T%d-%d", pid, t.ID, t.Attempts+t.InfraFailures+1)
+		n, err := d.DB.AttemptCount(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		worker := fmt.Sprintf("%s-T%d-%d", pid, t.ID, n+1) // unique per attempt: its own log, its own usage row
 		if err := d.DB.Claim(ctx, t.ID, pid, model, worker, d.Node, lease); err != nil {
 			if errors.Is(err, db.ErrTaken) {
 				continue
@@ -81,7 +108,15 @@ func (d *Daemon) schedule(ctx context.Context) error {
 		inFlight[t.ID] = claims
 		slot := d.freeSlot()
 		d.starting[t.ID] = starting{provider: pid, slot: slot}
-		go func() { d.started <- d.prepare(ctx, t, pid, model, worker, slot) }()
+		adapter := d.adapters[pid] // read on the loop; disableProvider may delete it meanwhile
+		go func() {
+			defer func() {
+				if r := recover(); r != nil { // never strand a claimed task in starting
+					d.started <- started{taskID: t.ID, err: fmt.Errorf("prepare panicked: %v", r)}
+				}
+			}()
+			d.started <- d.prepare(ctx, t, adapter, pid, model, worker, slot)
+		}()
 	}
 	return nil
 }
@@ -96,7 +131,7 @@ type started struct {
 
 // prepare does the slow part of a start off the loop: the worktree (a checkout of the whole
 // repo), the prompt, the process. Only applyStart touches the daemon's maps.
-func (d *Daemon) prepare(ctx context.Context, t db.Task, pid, model, worker string, slot int) started {
+func (d *Daemon) prepare(ctx context.Context, t db.Task, adapter provider.Adapter, pid, model, worker string, slot int) started {
 	fail := func(err error) started { return started{taskID: t.ID, err: err} }
 	r, err := d.repo(t.Repo)
 	if err != nil {
@@ -128,8 +163,8 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, pid, model, worker stri
 	_ = os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o600)
 	tok := d.Board.Issue(board.Identity{TaskID: t.ID, Role: "worker"})
 	a := provider.Attempt{TaskID: t.ID, Worktree: wt.Path, Dir: dir, Prompt: prompt,
-		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate, Slot: slot}
-	cmd, err := d.adapters[pid].Command(ctx, a)
+		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate, Slot: slot, Deny: d.Cfg.WorkerDeny()}
+	cmd, err := adapter.Command(ctx, a)
 	if err != nil {
 		d.Board.Revoke(tok)
 		return fail(err)
@@ -217,11 +252,12 @@ func (d *Daemon) reap(ctx context.Context) {
 			continue
 		default:
 		}
-		if now.After(p.deadline) {
+		if now.After(p.deadline) && !p.killed {
+			// Killed, but kept until it is gone: re-queuing now would let a dying process
+			// and a new attempt write the same worktree. finish() counts the timeout.
+			p.killed = true
 			killGroup(p.cmd)
-			go func() { <-p.done }()
-			d.release(id, p)
-			d.fail(ctx, id, db.Running, modelFail, "timeout", "wall clock "+d.Cfg.Limits.TaskWallClock.String()+" exceeded")
+			d.Board.Revoke(p.token)
 			continue
 		}
 		if now.After(p.leaseUntil.Add(-lease / 2)) { // renew at half-life, not every tick
@@ -255,6 +291,21 @@ func (d *Daemon) finish(ctx context.Context, id int64, p *proc, err error) {
 	res := provider.ParseResult(fileTail(p.log, 64<<10))
 	if res.Known {
 		d.DB.SetUsage(ctx, p.log, res.TokensIn, res.TokensOut, res.CostUSD)
+	}
+	if p.killed {
+		d.fail(ctx, id, db.Running, modelFail, "timeout", "wall clock "+d.Cfg.Limits.TaskWallClock.String()+" exceeded")
+		return
+	}
+	if res.Refused != "" {
+		// The task itself was refused: another attempt gets the same answer. A person reads it.
+		if d.DB.Move(ctx, "swarmd", id, []db.Status{db.Running}, db.Blocked, db.Patch{ClearLease: true}) == nil {
+			d.DB.EndAttempt(ctx, id, "blocked")
+			t, _ := d.DB.GetTask(ctx, id)
+			_ = d.DB.Note(ctx, t.RunID, id, "swarmd", "review", "the model refused this task: "+res.Refused)
+			d.DB.Event(ctx, "swarmd", id, "refused", map[string]string{"text": res.Refused})
+			d.notify(fmt.Sprintf("swarm %s: T%d %q refused by the model; rewrite the task", d.Cfg.Profile.Name, id, t.Title))
+		}
+		return
 	}
 	if res.AuthFailed {
 		d.disableProvider(ctx, p.provider, "not logged in")
@@ -357,9 +408,34 @@ func killGroup(cmd *exec.Cmd) {
 	time.AfterFunc(10*time.Second, func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
 }
 
-func (d *Daemon) stopAll() {
+// shutdown stops every worker before the daemon exits. Workers live in their own process
+// groups and would outlive it otherwise, writing worktrees the next daemon re-queues. Starts
+// still being prepared are awaited and killed too. SIGTERM, then SIGKILL after a grace.
+func (d *Daemon) shutdown() {
+	wait := time.After(30 * time.Second)
+	for len(d.starting) > 0 {
+		select {
+		case s := <-d.started:
+			delete(d.starting, s.taskID)
+			if s.p != nil {
+				d.procs[s.taskID] = s.p
+			}
+		case <-wait:
+			d.starting = map[int64]starting{}
+		}
+	}
 	for _, p := range d.procs {
 		killGroup(p.cmd)
+	}
+	grace := time.After(10 * time.Second)
+	for id, p := range d.procs {
+		select {
+		case <-p.done:
+		case <-grace:
+			_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+			<-p.done
+		}
+		delete(d.procs, id)
 	}
 }
 

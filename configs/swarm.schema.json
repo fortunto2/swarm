@@ -30,6 +30,15 @@
         },
         "project_rules": {
           "type": "string"
+        },
+        "deny_paths": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
