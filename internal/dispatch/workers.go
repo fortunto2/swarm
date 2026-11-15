@@ -24,7 +24,7 @@ import (
 // promote: draft tasks whose every dependency is merged become ready.
 func (d *Daemon) promote(ctx context.Context) error {
 	_, err := d.DB.ExecContext(ctx, `UPDATE tasks SET status='ready', updated_at=unixepoch()
-		WHERE status='draft' AND NOT EXISTS (
+		WHERE status='draft' AND NOT EXISTS ( -- draft -> ready, the only bulk transition
 		  SELECT 1 FROM deps JOIN tasks n ON n.id=deps.needs_id
 		  WHERE deps.task_id=tasks.id AND n.status!='merged')`)
 	return err
@@ -58,7 +58,7 @@ func (d *Daemon) maxWorkers() int {
 }
 
 func (d *Daemon) schedule(ctx context.Context) error {
-	ready, err := d.DB.TasksIn(ctx, "ready")
+	ready, err := d.DB.TasksIn(ctx, db.Ready)
 	if err != nil {
 		return err
 	}
@@ -66,9 +66,12 @@ func (d *Daemon) schedule(ctx context.Context) error {
 	for _, p := range d.procs {
 		busy[p.provider]++
 	}
+	for _, pid := range d.starting {
+		busy[pid]++
+	}
 	now := time.Now().Unix()
 	for _, t := range ready {
-		if len(d.procs) >= d.maxWorkers() {
+		if len(d.procs)+len(d.starting) >= d.maxWorkers() {
 			return nil
 		}
 		if t.NotBefore.Valid && t.NotBefore.Int64 > now {
@@ -78,77 +81,91 @@ func (d *Daemon) schedule(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		if err := d.start(ctx, t, pid); err != nil {
+		p := d.Cfg.Providers[pid]
+		model := p.Models[t.Tier]
+		worker := fmt.Sprintf("%s-T%d-%d", pid, t.ID, t.Attempts+t.InfraFailures+1)
+		if err := d.DB.Claim(ctx, t.ID, pid, model, worker, d.Node, lease); err != nil {
 			if errors.Is(err, db.ErrTaken) {
 				continue
 			}
-			d.Log.Error("start failed", "task", t.ID, "err", err)
-			d.fail(ctx, t.ID, infraFail, "crash", err.Error())
-			continue
+			return err
 		}
 		busy[pid]++
+		d.starting[t.ID] = pid
+		go func() { d.started <- d.prepare(ctx, t, pid, model, worker) }()
 	}
 	return nil
 }
 
-func (d *Daemon) start(ctx context.Context, t db.Task, pid string) error {
-	p := d.Cfg.Providers[pid]
-	model := p.Models[t.Tier]
-	worker := fmt.Sprintf("%s-T%d-%d", pid, t.ID, t.Attempts+t.InfraFailures+1)
-	if err := d.DB.Claim(ctx, t.ID, pid, model, worker, d.Node, lease); err != nil {
-		return err
-	}
+// started: a worker prepared off the loop, or why it could not be.
+type started struct {
+	taskID int64
+	p      *proc
+	model  string
+	err    error
+}
+
+// prepare does the slow part of a start off the loop: the worktree (a checkout of the whole
+// repo), the prompt, the process. Only applyStart touches the daemon's maps.
+func (d *Daemon) prepare(ctx context.Context, t db.Task, pid, model, worker string) started {
+	fail := func(err error) started { return started{taskID: t.ID, err: err} }
 	r, err := d.repo(t.Repo)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	base, err := d.DB.RunBase(ctx, t.RunID)
 	if err != nil {
-		return err
+		return fail(err)
 	}
-	wt, err := worktree.Ensure(ctx, r.Path, config.Expand(d.Cfg.Profile.WorktreeRoot), t.Repo, t.ID, base)
+	wt, err := worktree.Ensure(ctx, r.Path, d.Cfg.Profile.WorktreeRoot, t.Repo, t.ID, base)
 	if err != nil {
-		return fmt.Errorf("worktree: %w", err)
+		return fail(fmt.Errorf("worktree: %w", err))
 	}
-	if err := d.DB.Set(ctx, t.ID, map[string]any{"branch": wt.Branch, "worktree": wt.Path}); err != nil {
-		return err
-	}
-	t.Branch.String, t.Worktree.String = wt.Branch, wt.Path
-
 	dir := filepath.Join(d.Cfg.StatePath(), "attempts", worker)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+		return fail(err)
 	}
-	tok := d.Board.Issue(board.Identity{TaskID: t.ID, Role: "worker"})
 	prompt, err := d.prompt(ctx, t, r)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	_ = os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o600)
+	tok := d.Board.Issue(board.Identity{TaskID: t.ID, Role: "worker"})
 	a := provider.Attempt{TaskID: t.ID, Worktree: wt.Path, Dir: dir, Prompt: prompt,
 		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate}
 	cmd, err := d.adapters[pid].Command(ctx, a)
 	if err != nil {
 		d.Board.Revoke(tok)
-		return err
+		return fail(err)
 	}
 	logPath := filepath.Join(dir, "log.jsonl")
-	done, err := d.launch(cmd, logPath, pid, worker)
+	done, err := d.launch(cmd, logPath, worker)
 	if err != nil {
 		d.Board.Revoke(tok)
-		return err
+		return fail(err)
 	}
-	_, _ = d.DB.StartAttempt(ctx, t.ID, pid, model, d.Node, logPath)
-	d.procs[t.ID] = &proc{cmd: cmd, token: tok, provider: pid, done: done, log: logPath, leaseUntil: time.Now().Add(lease),
-		deadline: time.Now().Add(d.Cfg.Limits.TaskWallClock.Duration)}
-	d.DB.Event(ctx, "swarmd", t.ID, "started", map[string]string{"provider": pid, "worker": worker, "node": d.Node})
-	d.Log.Info("worker started", "task", t.ID, "provider", pid, "worker", worker)
-	return nil
+	now := time.Now()
+	return started{taskID: t.ID, model: model, p: &proc{cmd: cmd, token: tok, provider: pid, done: done, log: logPath,
+		leaseUntil: now.Add(lease), deadline: now.Add(d.Cfg.Limits.TaskWallClock.Duration)}}
+}
+
+func (d *Daemon) applyStart(ctx context.Context, s started) {
+	pid := d.starting[s.taskID]
+	delete(d.starting, s.taskID)
+	if s.err != nil {
+		d.Log.Error("start failed", "task", s.taskID, "err", s.err)
+		d.fail(ctx, s.taskID, db.Running, infraFail, "crash", s.err.Error())
+		return
+	}
+	d.procs[s.taskID] = s.p
+	_, _ = d.DB.StartAttempt(ctx, s.taskID, pid, s.model, d.Node, s.p.log)
+	d.DB.Event(ctx, "swarmd", s.taskID, "started", map[string]string{"provider": pid, "log": s.p.log, "node": d.Node})
+	d.Log.Info("worker started", "task", s.taskID, "provider", pid)
 }
 
 // launch: own process group (stop = signal the group, no orphans), output streamed to a
 // file and never held in memory, commits signed with the worker's identity.
-func (d *Daemon) launch(cmd *exec.Cmd, logPath, pid, worker string) (chan error, error) {
+func (d *Daemon) launch(cmd *exec.Cmd, logPath, worker string) (chan error, error) {
 	f, err := os.Create(logPath)
 	if err != nil {
 		return nil, err
@@ -179,18 +196,15 @@ func (d *Daemon) prompt(ctx context.Context, t db.Task, r config.Repo) (string, 
 		prev = append(prev, n.Body)
 	}
 	rules := ""
-	if f := d.Cfg.Profile.ProjectRules; f != "" {
-		path := config.Expand(f)
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(d.Cfg.Dir, path)
-		}
+	if path := d.Cfg.Profile.ProjectRules; path != "" {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("project_rules: %w", err)
 		}
 		rules = string(b)
 	}
-	return prompts.RenderWorker(prompts.Worker{ID: t.ID, Worktree: t.Worktree.String, Branch: t.Branch.String,
+	wt := d.locate(t)
+	return prompts.RenderWorker(prompts.Worker{ID: t.ID, Worktree: wt.Path, Branch: wt.Branch,
 		Title: t.Title, Spec: t.Spec, Acceptance: t.Acceptance, Files: files, Previous: prev, Gate: r.Gate, Rules: rules})
 }
 
@@ -210,21 +224,23 @@ func (d *Daemon) reap(ctx context.Context) {
 			killGroup(p.cmd)
 			go func() { <-p.done }()
 			d.release(id, p)
-			d.fail(ctx, id, modelFail, "timeout", "wall clock "+d.Cfg.Limits.TaskWallClock.String()+" exceeded")
+			d.fail(ctx, id, db.Running, modelFail, "timeout", "wall clock "+d.Cfg.Limits.TaskWallClock.String()+" exceeded")
 			continue
 		}
 		if now.After(p.leaseUntil.Add(-lease / 2)) { // renew at half-life, not every tick
 			p.leaseUntil = now.Add(lease)
-			_ = d.DB.Set(ctx, id, map[string]any{"lease_until": p.leaseUntil.Unix()})
+			_ = d.DB.Renew(ctx, id, p.leaseUntil.Unix())
 		}
 	}
-	running, err := d.DB.TasksIn(ctx, "running")
+	running, err := d.DB.TasksIn(ctx, db.Running)
 	if err != nil {
 		return
 	}
 	for _, t := range running {
-		if _, live := d.procs[t.ID]; !live && t.LeaseUntil.Valid && t.LeaseUntil.Int64 < now.Unix() {
-			d.fail(ctx, t.ID, infraFail, "crash", "lease expired with no live worker")
+		_, live := d.procs[t.ID]
+		_, starting := d.starting[t.ID]
+		if !live && !starting && t.LeaseUntil.Valid && t.LeaseUntil.Int64 < now.Unix() {
+			d.fail(ctx, t.ID, db.Running, infraFail, "crash", "lease expired with no live worker")
 		}
 	}
 }
@@ -243,21 +259,18 @@ func (d *Daemon) finish(ctx context.Context, id int64, p *proc, err error) {
 	if res.Known {
 		d.DB.SetUsage(ctx, p.log, res.TokensIn, res.TokensOut, res.CostUSD)
 	}
-	t, gerr := d.DB.GetTask(ctx, id)
-	if gerr != nil || t.Status != "running" {
-		return
-	}
 	if res.AuthFailed {
 		d.disableProvider(ctx, p.provider, "not logged in")
-		d.DB.EndAttempt(ctx, id, "crash")
-		_ = d.DB.Set(ctx, id, map[string]any{"status": "ready", "lease_until": nil})
+		if d.DB.Move(ctx, "swarmd", id, []db.Status{db.Running}, db.Ready, db.Patch{ClearLease: true}) == nil {
+			d.DB.EndAttempt(ctx, id, "crash")
+		}
 		return
 	}
 	msg := "worker exited without report_done"
 	if err != nil {
 		msg += " (" + err.Error() + ")"
 	}
-	d.fail(ctx, id, infraFail, "crash", msg)
+	d.fail(ctx, id, db.Running, infraFail, "crash", msg) // a no-op if it reported: the task left running
 }
 
 // disableProvider takes a provider out of this daemon's rotation and says so. Its tasks
@@ -306,24 +319,33 @@ const (
 
 // fail ends the open attempt and sends the task back to ready, or to blocked when its
 // counter reaches the cap. A model failure leaves its detail for the next attempt's prompt.
-func (d *Daemon) fail(ctx context.Context, id int64, kind failKind, outcome, detail string) {
+// The move is guarded by `from`: if the task already left it (the worker reported in the
+// meantime), the failure is stale and nothing is written.
+func (d *Daemon) fail(ctx context.Context, id int64, from db.Status, kind failKind, outcome, detail string) {
 	t, err := d.DB.GetTask(ctx, id)
-	if err != nil {
+	if err != nil || t.Status != from {
+		return
+	}
+	n, limit, event := t.InfraFailures+1, maxInfraFailed, "infra_fail"
+	patch := db.Patch{ClearLease: true, InfraFailures: &n}
+	if kind == modelFail {
+		n, limit, event = t.Attempts+1, d.Cfg.Limits.MaxAttempts, "model_fail"
+		patch = db.Patch{ClearLease: true, Attempts: &n}
+	}
+	to := db.Ready
+	if n >= limit {
+		to = db.Blocked // phase 2: the lead decides split / rewrite / needs_human
+	}
+	if err := d.DB.Move(ctx, "swarmd", id, []db.Status{from}, to, patch); err != nil {
+		d.Log.Info("failure not applied", "task", id, "err", err)
 		return
 	}
 	d.DB.EndAttempt(ctx, id, outcome)
-	col, n, limit, event := "infra_failures", t.InfraFailures+1, maxInfraFailed, "infra_fail"
 	if kind == modelFail {
-		col, n, limit, event = "attempts", t.Attempts+1, d.Cfg.Limits.MaxAttempts, "model_fail"
 		_ = d.DB.Note(ctx, t.RunID, id, "swarmd", "review", fmt.Sprintf("attempt %d: %s\n%s", n, outcome, detail))
 	}
-	status := "ready"
-	if n >= limit {
-		status = "blocked" // phase 2: the lead decides split / rewrite / needs_human
-	}
-	_ = d.DB.Set(ctx, id, map[string]any{"status": status, col: n, "lease_until": nil})
-	d.DB.Event(ctx, "swarmd", id, event, map[string]string{"outcome": outcome, "detail": detail, "now": status})
-	d.Log.Warn(event, "task", id, "outcome", outcome, "status", status)
+	d.DB.Event(ctx, "swarmd", id, event, map[string]string{"outcome": outcome, "detail": detail, "now": string(to)})
+	d.Log.Warn(event, "task", id, "outcome", outcome, "status", to)
 }
 
 func killGroup(cmd *exec.Cmd) {

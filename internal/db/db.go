@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -18,6 +17,13 @@ import (
 
 //go:embed schema.sql
 var schema string
+
+// migrations: append-only. Step i runs once, when PRAGMA user_version is i; the version
+// then becomes i+1. Step 0 is the base schema (idempotent, so databases made before
+// versioning adopt it). A later change is a new step, never an edit of an old one.
+var migrations = []string{
+	schema,
+}
 
 type DB struct{ *sql.DB }
 
@@ -35,28 +41,45 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := sdb.Exec(schema); err != nil {
+	if err := migrate(sdb, migrations); err != nil {
 		sdb.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
+		return nil, err
 	}
 	return &DB{sdb}, nil
 }
 
-var ErrTaken = errors.New("task is not ready (already taken or not yet promoted)")
+func migrate(sdb *sql.DB, steps []string) error {
+	var v int
+	if err := sdb.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return err
+	}
+	for i := v; i < len(steps); i++ {
+		tx, err := sdb.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(steps[i]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration %d: %w", i, err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", i+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // Claim atomically moves one ready task to running. Exactly one caller wins; the rest
 // get ErrTaken and move on to the next task.
 func (d *DB) Claim(ctx context.Context, taskID int64, provider, model, worker, node string, lease time.Duration) error {
-	var id int64
-	err := d.QueryRowContext(ctx, `
-		UPDATE tasks SET status='running', provider=?1, model=?2, worker_id=?3, node=?4,
-		  lease_until=unixepoch()+?5, updated_at=unixepoch()
-		WHERE id=?6 AND status='ready'
-		RETURNING id`, provider, model, worker, node, int64(lease.Seconds()), taskID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrTaken
-	}
-	return err
+	return d.Move(ctx, "swarmd", taskID, []Status{Ready}, Running, Patch{
+		Provider: &provider, Model: &model, Worker: &worker, Node: &node,
+		LeaseUntil: P(time.Now().Add(lease).Unix()),
+	})
 }
 
 // StatusCounts: tasks per status, all runs.

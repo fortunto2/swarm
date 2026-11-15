@@ -4,29 +4,31 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"strings"
 )
 
 type Task struct {
-	ID, RunID                int64
-	ParentID                 sql.NullInt64
-	Repo, Title, Spec        string
-	Acceptance, Tier, Status string
-	Priority                 int
-	Provider, Model, Worker  sql.NullString
-	Node, Branch, Worktree   sql.NullString
-	ResultCommit             sql.NullString
-	Attempts, InfraFailures  int
-	LeaseUntil, NotBefore    sql.NullInt64
+	ID, RunID               int64
+	ParentID                sql.NullInt64
+	Repo, Title, Spec       string
+	Acceptance, Tier        string
+	Status                  Status
+	Priority                int
+	Provider, Model, Worker sql.NullString
+	Node, ResultCommit      sql.NullString
+	Attempts, InfraFailures int
+	LeaseUntil, NotBefore   sql.NullInt64
 }
 
 const taskCols = `id, run_id, parent_id, repo, title, spec, acceptance, tier, status, priority,
-	provider, model, worker_id, node, branch, worktree, result_commit, attempts, infra_failures,
+	provider, model, worker_id, node, result_commit, attempts, infra_failures,
 	lease_until, not_before`
 
 func scanTask(r interface{ Scan(...any) error }) (Task, error) {
 	var t Task
 	err := r.Scan(&t.ID, &t.RunID, &t.ParentID, &t.Repo, &t.Title, &t.Spec, &t.Acceptance, &t.Tier,
-		&t.Status, &t.Priority, &t.Provider, &t.Model, &t.Worker, &t.Node, &t.Branch, &t.Worktree,
+		&t.Status, &t.Priority, &t.Provider, &t.Model, &t.Worker, &t.Node,
 		&t.ResultCommit, &t.Attempts, &t.InfraFailures, &t.LeaseUntil, &t.NotBefore)
 	return t, err
 }
@@ -36,17 +38,12 @@ func (d *DB) GetTask(ctx context.Context, id int64) (Task, error) {
 }
 
 // TasksIn returns tasks in any of the statuses, scheduling order.
-func (d *DB) TasksIn(ctx context.Context, statuses ...string) ([]Task, error) {
+func (d *DB) TasksIn(ctx context.Context, statuses ...Status) ([]Task, error) {
 	args := make([]any, len(statuses))
-	ph := ""
 	for i, s := range statuses {
-		args[i] = s
-		if i > 0 {
-			ph += ","
-		}
-		ph += "?"
+		args[i] = string(s)
 	}
-	rows, err := d.QueryContext(ctx, `SELECT `+taskCols+` FROM tasks WHERE status IN (`+ph+`)
+	rows, err := d.QueryContext(ctx, `SELECT `+taskCols+` FROM tasks WHERE status IN (`+placeholders(len(statuses))+`)
 		ORDER BY priority DESC, id`, args...)
 	if err != nil {
 		return nil, err
@@ -79,7 +76,7 @@ type NewTask struct {
 	Tier                          string
 	Priority                      int
 	Files                         []string // write claims
-	Status                        string   // "ready" or "draft"
+	Needs                         []int64  // tasks that must merge first; the task starts as draft
 }
 
 func (d *DB) AddTask(ctx context.Context, n NewTask) (int64, error) {
@@ -88,18 +85,33 @@ func (d *DB) AddTask(ctx context.Context, n NewTask) (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
-	if n.Status == "" {
-		n.Status = "ready"
+	status := Ready
+	if len(n.Needs) > 0 {
+		status = Draft
 	}
 	r, err := tx.ExecContext(ctx, `INSERT INTO tasks(run_id, parent_id, repo, title, spec, acceptance, tier,
 		priority, status, created_at, updated_at) VALUES(?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())`,
-		n.RunID, n.ParentID, n.Repo, n.Title, n.Spec, n.Acceptance, n.Tier, n.Priority, n.Status)
+		n.RunID, n.ParentID, n.Repo, n.Title, n.Spec, n.Acceptance, n.Tier, n.Priority, string(status))
 	if err != nil {
 		return 0, err
 	}
 	id, _ := r.LastInsertId()
 	for _, f := range n.Files {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO file_claims(path, task_id, mode) VALUES(?, ?, 'write')`, f, id); err != nil {
+			return 0, err
+		}
+	}
+	// Edges only ever go from a new task to existing ones, so the graph cannot get a cycle:
+	// no check needed while this is the only way to add one.
+	for _, need := range n.Needs {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?)`, need).Scan(&exists); err != nil {
+			return 0, err
+		}
+		if !exists {
+			return 0, fmt.Errorf("needs task %d, which does not exist", need)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO deps(task_id, needs_id) VALUES(?, ?)`, id, need); err != nil {
 			return 0, err
 		}
 	}
@@ -122,17 +134,6 @@ func (d *DB) WriteClaims(ctx context.Context, taskID int64) ([]string, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
-}
-
-// Set updates named columns of a task and stamps updated_at. Column names are code, never input.
-func (d *DB) Set(ctx context.Context, id int64, cols map[string]any) error {
-	q, args := "UPDATE tasks SET updated_at=unixepoch()", []any{}
-	for k, v := range cols {
-		q += ", " + k + "=?"
-		args = append(args, v)
-	}
-	_, err := d.ExecContext(ctx, q+" WHERE id=?", append(args, id)...)
-	return err
 }
 
 // Event appends to the audit log; data is JSON-encoded.
@@ -203,7 +204,7 @@ func (d *DB) SetRunStatus(ctx context.Context, runID int64, status string) error
 // OpenRuns: runs still planning or running, with how many of their tasks are not terminal.
 func (d *DB) OpenRuns(ctx context.Context) (map[int64]int, error) {
 	rows, err := d.QueryContext(ctx, `SELECT r.id, (SELECT count(*) FROM tasks t WHERE t.run_id=r.id
-		AND t.status NOT IN ('merged','split','failed','cancelled','needs_human'))
+		AND t.status NOT IN (`+settledList+`))
 		FROM runs r WHERE r.status IN ('planning','running')`)
 	if err != nil {
 		return nil, err
@@ -225,3 +226,12 @@ func (d *DB) OpenRuns(ctx context.Context) (map[int64]int, error) {
 func (d *DB) SetUsage(ctx context.Context, logPath string, in, out int64, cost float64) {
 	_, _ = d.ExecContext(ctx, `UPDATE attempts SET tokens_in=?, tokens_out=?, cost_usd=? WHERE log_path=?`, in, out, cost, logPath)
 }
+
+// settledList is Settled as an SQL literal list (constants only, never input).
+var settledList = func() string {
+	q := make([]string, len(Settled))
+	for i, s := range Settled {
+		q[i] = "'" + string(s) + "'"
+	}
+	return strings.Join(q, ",")
+}()

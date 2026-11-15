@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS tasks(
   status TEXT NOT NULL CHECK(status IN('draft','ready','running','verifying',
     'review','merging','merged','split','blocked','needs_human','failed','cancelled')),
   provider TEXT, model TEXT, worker_id TEXT, node TEXT,
-  branch TEXT, worktree TEXT, result_commit TEXT,
+  result_commit TEXT, -- branch and worktree are derived from (repo, id), never stored
   attempts INTEGER NOT NULL DEFAULT 0,
   infra_failures INTEGER NOT NULL DEFAULT 0,
   lease_until INTEGER, not_before INTEGER,

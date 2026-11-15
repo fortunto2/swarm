@@ -316,3 +316,59 @@ func TestSessionMCPQueuesAndWatches(t *testing.T) {
 		t.Fatalf("status: %s", st)
 	}
 }
+
+// A daemon killed mid-attempt: the next one puts the task back at once (not after the
+// 2-minute lease) and the restart costs the task no infra strike.
+func TestRestartReconcilesRunningTasks(t *testing.T) {
+	repo := testbed(t)
+	marks := t.TempDir()
+	marker := filepath.Join(marks, "first")
+	worker := fmt.Sprintf("if [ ! -f %q ]; then touch %q; exec sleep 300; fi\n", marker, marker) + goodWorker
+	prof := profile(t, repo, worker, 4)
+	addTask(t, prof, "")
+	first := exec.Command(bin, "--profile", prof, "daemon")
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = first.Process.Kill() // no cleanup: the worker is orphaned, the task stays running
+	_ = first.Wait()
+	_ = exec.Command("pkill", "-f", "sleep 300").Run()
+
+	start := time.Now()
+	if out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if took := time.Since(start); took > 30*time.Second {
+		t.Fatalf("restart waited %v: the lease was not bypassed", took)
+	}
+	if st := status(t, prof); !strings.Contains(st, "merged       1") {
+		t.Fatalf("want merged after restart:\n%s", st)
+	}
+}
+
+// A merge git refuses (an untracked file in main's checkout would be overwritten) blocks
+// that task with the reason and leaves the queue free; it does not retry forever.
+func TestMergeFailureBlocksInsteadOfLooping(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, goodWorker, 4)
+	if err := os.WriteFile(filepath.Join(repo, "two.go"), []byte("package app // local edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addTask(t, prof, "")
+	out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle")
+	if err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "merge failed, task blocked") {
+		t.Fatalf("no merge failure reported:\n%s", out)
+	}
+	if st := status(t, prof); !strings.Contains(st, "blocked      1") {
+		t.Fatalf("want blocked:\n%s", st)
+	}
+}

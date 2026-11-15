@@ -15,12 +15,16 @@ type WT struct {
 	Branch string
 }
 
-func Branch(taskID int64) string { return fmt.Sprintf("swarm/T%d", taskID) }
+// For is where a task's worktree and branch are: derived from (root, repo, id), never
+// stored, so the database and git cannot disagree about them.
+func For(root, repoName string, taskID int64) WT {
+	return WT{Path: filepath.Join(root, fmt.Sprintf("%s--T%d", repoName, taskID)), Branch: fmt.Sprintf("swarm/T%d", taskID)}
+}
 
 // Ensure creates the worktree for a task from base, or reuses it on a later attempt:
 // a retry continues from what the previous attempt committed.
 func Ensure(ctx context.Context, repo, root, repoName string, taskID int64, base string) (WT, error) {
-	wt := WT{Path: filepath.Join(root, fmt.Sprintf("%s--T%d", repoName, taskID)), Branch: Branch(taskID)}
+	wt := For(root, repoName, taskID)
 	if _, err := os.Stat(filepath.Join(wt.Path, ".git")); err == nil {
 		return wt, nil
 	}

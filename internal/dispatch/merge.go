@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fortunto2/swarm/internal/config"
+	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/worktree"
@@ -20,13 +21,16 @@ const allowTestsMarker = "[allow-test-changes]"
 // startGates launches the gate for every verifying task not already being checked. Gates
 // run off the tick so a 15-minute suite does not freeze scheduling.
 func (d *Daemon) startGates(ctx context.Context) error {
-	ts, err := d.DB.TasksIn(ctx, "verifying")
+	ts, err := d.DB.TasksIn(ctx, db.Verifying)
 	if err != nil {
 		return err
 	}
 	for _, t := range ts {
 		if d.gating[t.ID] {
 			continue
+		}
+		if len(d.gating) >= d.Cfg.Limits.MaxGates {
+			return nil // ten suites at once time out honest work as gate_fail
 		}
 		r, err := d.repo(t.Repo)
 		if err != nil {
@@ -67,29 +71,40 @@ func runGate(ctx context.Context, r config.Repo, dir, commit string) gate.Verdic
 func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 	delete(d.gating, r.taskID)
 	t, err := d.DB.GetTask(ctx, r.taskID)
-	if err != nil || t.Status != "verifying" || t.ResultCommit.String != r.commit {
+	if err != nil || t.Status != db.Verifying || t.ResultCommit.String != r.commit {
 		return // superseded: cancelled, or resubmitted while the gate ran
 	}
 	d.DB.Event(ctx, "swarmd", r.taskID, "gate_"+map[bool]string{true: "pass", false: "fail"}[r.v.OK],
 		map[string]string{"stage": r.v.Stage, "reason": r.v.Reason})
 	if !r.v.OK {
 		d.DB.Event(ctx, "swarmd", r.taskID, "gate_fail_detail", map[string]string{"tail": r.v.Tail})
-		d.fail(ctx, r.taskID, modelFail, "gate_fail", r.v.Stage+": "+r.v.Reason+"\n"+r.v.Tail)
+		d.fail(ctx, r.taskID, db.Verifying, modelFail, "gate_fail", r.v.Stage+": "+r.v.Reason+"\n"+r.v.Tail)
 		return
 	}
 	// Cross-family review lands in phase 4; until then a green gate goes straight to the queue.
-	_ = d.DB.Set(ctx, r.taskID, map[string]any{"status": "merging"})
+	if err := d.DB.Move(ctx, "swarmd", r.taskID, []db.Status{db.Verifying}, db.Merging, db.Patch{}); err != nil {
+		return
+	}
 	d.Log.Info("gate passed", "task", r.taskID)
 }
 
 // mergeOne takes one task off the merge queue per tick. ff: rebase on main, re-gate if
-// main moved, fast-forward. pr: leave the branch for a human (phase 6).
+// main moved, fast-forward. pr: leave the branch for a human (phase 6). A merge that fails
+// moves its task to blocked with the reason: retrying the same fast-forward every tick
+// would hold every task queued behind it.
 func (d *Daemon) mergeOne(ctx context.Context) error {
-	ts, err := d.DB.TasksIn(ctx, "merging")
+	ts, err := d.DB.TasksIn(ctx, db.Merging)
 	if err != nil || len(ts) == 0 {
 		return err
 	}
 	t := ts[0]
+	if err := d.merge(ctx, t); err != nil {
+		d.blockMerge(ctx, t, err)
+	}
+	return nil
+}
+
+func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	r, err := d.repo(t.Repo)
 	if err != nil {
 		return err
@@ -97,19 +112,20 @@ func (d *Daemon) mergeOne(ctx context.Context) error {
 	if r.Merge != "ff" {
 		return fmt.Errorf("repo %s: merge %q lands in phase 6", t.Repo, r.Merge)
 	}
-	wt := worktree.WT{Path: t.Worktree.String, Branch: t.Branch.String}
+	wt := d.locate(t)
 	main, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
 	if err != nil {
 		return err
 	}
 	if !gitx.IsAncestor(ctx, wt.Path, main, t.ResultCommit.String) {
-		return d.rebase(ctx, t.ID, wt, main)
+		return d.rebase(ctx, t, wt, main)
 	}
 	if err := ffMain(ctx, r, wt.Branch, main); err != nil {
-		d.DB.Event(ctx, "swarmd", t.ID, "merge_error", map[string]string{"err": err.Error()})
 		return err
 	}
-	_ = d.DB.Set(ctx, t.ID, map[string]any{"status": "merged"})
+	if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Merged, db.Patch{}); err != nil {
+		return err
+	}
 	d.DB.Event(ctx, "swarmd", t.ID, "merged", map[string]string{"commit": t.ResultCommit.String})
 	d.Log.Info("merged", "task", t.ID, "commit", t.ResultCommit.String)
 	if err := worktree.Remove(ctx, r.Path, wt); err != nil {
@@ -121,6 +137,16 @@ func (d *Daemon) mergeOne(ctx context.Context) error {
 		d.afterMerge(context.WithoutCancel(ctx), t.ID, t.Repo, r.Path, t.ResultCommit.String)
 	}()
 	return nil
+}
+
+func (d *Daemon) blockMerge(ctx context.Context, t db.Task, err error) {
+	if d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Blocked, db.Patch{}) != nil {
+		return
+	}
+	_ = d.DB.Note(ctx, t.RunID, t.ID, "swarmd", "review", "merge failed: "+err.Error())
+	d.DB.Event(ctx, "swarmd", t.ID, "merge_error", map[string]string{"err": err.Error()})
+	d.Log.Error("merge failed, task blocked", "task", t.ID, "err", err)
+	d.notify(fmt.Sprintf("swarm %s: T%d could not merge: %v", d.Cfg.Profile.Name, t.ID, err))
 }
 
 // afterMerge runs the profile's hooks, e.g. reindexing the repo so the next worker's code
@@ -142,21 +168,24 @@ func (d *Daemon) afterMerge(ctx context.Context, id int64, repo, path, commit st
 
 // rebase: main moved since the gate. A clean rebase goes back through the gate on the new
 // commit; a conflict goes back to the worker without counting against it.
-func (d *Daemon) rebase(ctx context.Context, id int64, wt worktree.WT, main string) error {
+func (d *Daemon) rebase(ctx context.Context, t db.Task, wt worktree.WT, main string) error {
 	if _, err := gitx.Run(ctx, wt.Path, "rebase", "--quiet", main); err != nil {
 		_, _ = gitx.Run(ctx, wt.Path, "rebase", "--abort")
-		t, _ := d.DB.GetTask(ctx, id)
-		_ = d.DB.Note(ctx, t.RunID, id, "swarmd", "review", "rebase onto main conflicts: rebase your branch on "+main+" and resolve")
-		_ = d.DB.Set(ctx, id, map[string]any{"status": "ready"})
-		d.DB.Event(ctx, "swarmd", id, "rebase_conflict", map[string]string{"main": main})
+		if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Ready, db.Patch{}); err != nil {
+			return err
+		}
+		_ = d.DB.Note(ctx, t.RunID, t.ID, "swarmd", "review", "rebase onto main conflicts: rebase your branch on "+main+" and resolve")
+		d.DB.Event(ctx, "swarmd", t.ID, "rebase_conflict", map[string]string{"main": main})
 		return nil
 	}
 	head, err := gitx.Head(ctx, wt.Path, "HEAD")
 	if err != nil {
 		return err
 	}
-	_ = d.DB.Set(ctx, id, map[string]any{"status": "verifying", "result_commit": head})
-	d.DB.Event(ctx, "swarmd", id, "rebased", map[string]string{"main": main, "commit": head})
+	if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Verifying, db.Patch{ResultCommit: &head}); err != nil {
+		return err
+	}
+	d.DB.Event(ctx, "swarmd", t.ID, "rebased", map[string]string{"main": main, "commit": head})
 	return nil
 }
 

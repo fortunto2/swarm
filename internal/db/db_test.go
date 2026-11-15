@@ -104,3 +104,76 @@ func TestReopenIsIdempotent(t *testing.T) {
 		d.Close()
 	}
 }
+
+// The race the state machine exists for: a report_done (running -> verifying) lands between
+// a reader seeing "running" and its failure write. The failure must lose, not overwrite.
+func TestMoveLosesToAConcurrentTransition(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	id := seed(t, d, "running")
+	if err := d.Move(ctx, "worker", id, []Status{Running}, Verifying, Patch{ResultCommit: P("abc")}); err != nil {
+		t.Fatal(err)
+	}
+	err = d.Move(ctx, "swarmd", id, []Status{Running}, Ready, Patch{InfraFailures: P(1), ClearLease: true})
+	if !errors.Is(err, ErrStale) {
+		t.Fatalf("stale failure write: err=%v, want ErrStale", err)
+	}
+	got, _ := d.GetTask(ctx, id)
+	if got.Status != Verifying || got.ResultCommit.String != "abc" || got.InfraFailures != 0 {
+		t.Fatalf("the winner was overwritten: %+v", got)
+	}
+}
+
+func TestMoveRefusesIllegalTransition(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	id := seed(t, d, "ready")
+	if err := d.Move(context.Background(), "x", id, []Status{Ready}, Merged, Patch{}); !errors.Is(err, ErrIllegal) {
+		t.Fatalf("ready -> merged: err=%v, want ErrIllegal", err)
+	}
+}
+
+// Every status the schema allows is in the table, as a source or a target: a status nothing
+// can reach or leave is a typo waiting to happen.
+func TestTransitionTableCoversEveryStatus(t *testing.T) {
+	seen := map[Status]bool{}
+	for from, tos := range transitions {
+		seen[from] = true
+		for _, to := range tos {
+			seen[to] = true
+		}
+	}
+	for _, s := range []Status{Draft, Ready, Running, Verifying, Review, Merging, Merged, Split, Blocked, NeedsHuman, Failed, Cancelled} {
+		if !seen[s] {
+			t.Errorf("%s is unreachable and has no exits", s)
+		}
+	}
+}
+
+func TestMigrationsRunOnce(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "swarm.db")
+	d, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := append(append([]string{}, migrations...), `CREATE TABLE marker(n INTEGER); INSERT INTO marker VALUES(1);`)
+	for range 2 {
+		if err := migrate(d.DB, steps); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n, v int
+	_ = d.QueryRow(`SELECT count(*) FROM marker`).Scan(&n)
+	_ = d.QueryRow(`PRAGMA user_version`).Scan(&v)
+	if n != 1 || v != len(steps) {
+		t.Fatalf("marker rows=%d version=%d, want 1 and %d", n, v, len(steps))
+	}
+	d.Close()
+}

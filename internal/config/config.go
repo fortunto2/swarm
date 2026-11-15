@@ -49,6 +49,7 @@ type Limits struct {
 	MaxWorkers    int      `toml:"max_workers"`
 	TaskWallClock Duration `toml:"task_wall_clock"`
 	MaxAttempts   int      `toml:"max_attempts"`
+	MaxGates      int      `toml:"max_gates"` // gates running at once; default half of max_workers
 }
 
 type Provider struct {
@@ -150,6 +151,7 @@ func Load(profileDir string) (*Config, error) {
 	}
 	c.Dir = profileDir
 	c.defaults()
+	c.resolvePaths()
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -168,6 +170,9 @@ func (c *Config) defaults() {
 	}
 	if c.Limits.MaxAttempts == 0 {
 		c.Limits.MaxAttempts = 4
+	}
+	if c.Limits.MaxGates == 0 {
+		c.Limits.MaxGates = max(1, c.Limits.MaxWorkers/2)
 	}
 	if c.Hooks.Timeout.Duration == 0 {
 		c.Hooks.Timeout.Duration = 2 * time.Minute
@@ -292,12 +297,36 @@ func (c *Config) MCPFor(role string) map[string]MCPServer {
 	return out
 }
 
-func (c *Config) StatePath() string {
-	s := Expand(c.Profile.StateDir)
-	if filepath.IsAbs(s) {
-		return s
+// resolvePaths expands ~ and makes profile-relative paths absolute, once, so every
+// consumer reads final paths.
+func (c *Config) resolvePaths() {
+	abs := func(p string) string {
+		if p == "" {
+			return p
+		}
+		p = Expand(p)
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(c.Dir, p)
+		}
+		return filepath.Clean(p)
 	}
-	return filepath.Join(c.Dir, s)
+	c.Profile.StateDir = abs(c.Profile.StateDir)
+	c.Profile.WorktreeRoot = abs(c.Profile.WorktreeRoot)
+	c.Profile.ProjectRules = abs(c.Profile.ProjectRules)
+	for n, r := range c.Repos {
+		r.Path = abs(r.Path)
+		c.Repos[n] = r
+	}
+	for n, p := range c.Providers {
+		p.ConfigDir, p.Home = Expand(p.ConfigDir), Expand(p.Home)
+		c.Providers[n] = p
+	}
+	for n, m := range c.MCP {
+		m.Command = Expand(m.Command)
+		c.MCP[n] = m
+	}
 }
+
+func (c *Config) StatePath() string { return c.Profile.StateDir }
 
 func (c *Config) DBPath() string { return filepath.Join(c.StatePath(), "swarm.db") }

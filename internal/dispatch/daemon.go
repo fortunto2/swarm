@@ -21,6 +21,7 @@ import (
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/provider"
+	"github.com/fortunto2/swarm/internal/worktree"
 )
 
 const (
@@ -56,6 +57,8 @@ type Daemon struct {
 
 	adapters map[string]provider.Adapter
 	procs    map[int64]*proc
+	starting map[int64]string // claimed, being prepared off the loop: task -> provider
+	started  chan started
 	gating   map[int64]bool
 	results  chan gateResult
 	wake     chan int64
@@ -71,6 +74,8 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 		Log:      slog.New(slog.NewJSONHandler(os.Stderr, nil)),
 		adapters: map[string]provider.Adapter{},
 		procs:    map[int64]*proc{},
+		starting: map[int64]string{},
+		started:  make(chan started, 16),
 		gating:   map[int64]bool{},
 		results:  make(chan gateResult, 16),
 		wake:     wake,
@@ -102,6 +107,10 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 		return err
 	}
 	d.Board.IssueFixed(op, board.Identity{Role: "lead"})
+	d.Board.Locate = d.locate
+	if err := d.reconcile(ctx); err != nil {
+		return err
+	}
 	d.Board.BaseFor = func(name string) (string, error) {
 		r, err := d.repo(name)
 		if err != nil {
@@ -132,6 +141,8 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 		case <-d.wake:
 		case r := <-d.results:
 			d.applyGate(ctx, r)
+		case s := <-d.started:
+			d.applyStart(ctx, s)
 		}
 	}
 }
@@ -157,12 +168,12 @@ func (d *Daemon) Tick(ctx context.Context) error {
 // idle: nothing this daemon can move on its own. Blocked tasks wait for the lead (phase 2)
 // or a person, and drafts wait on them; neither is work for the dispatcher.
 func (d *Daemon) idle(ctx context.Context) bool {
-	if len(d.procs) > 0 || len(d.gating) > 0 {
+	if len(d.procs) > 0 || len(d.starting) > 0 || len(d.gating) > 0 {
 		return false
 	}
-	statuses := []string{"running", "verifying", "review", "merging"}
+	statuses := []db.Status{db.Running, db.Verifying, db.Review, db.Merging}
 	if len(d.adapters) > 0 { // ready work with no provider left to run it waits for a person
-		statuses = append(statuses, "ready")
+		statuses = append(statuses, db.Ready)
 	}
 	ts, err := d.DB.TasksIn(ctx, statuses...)
 	return err == nil && len(ts) == 0
@@ -203,6 +214,32 @@ func (d *Daemon) repo(name string) (config.Repo, error) {
 	if !ok {
 		return r, fmt.Errorf("task names repo %q, which the profile does not have", name)
 	}
-	r.Path = config.Expand(r.Path)
 	return r, nil
+}
+
+func (d *Daemon) locate(t db.Task) worktree.WT {
+	return worktree.For(d.Cfg.Profile.WorktreeRoot, t.Repo, t.ID)
+}
+
+// reconcile: at start this daemon is the only authority for its node, so a task it shows
+// as running with no worker alive is the previous daemon's, cut off by the restart. It goes
+// back to ready now, not when its lease runs out, and the restart is not the task's fault:
+// no attempt and no infra strike is counted. Verifying tasks need nothing: the gate map is
+// empty, so they are gated again on the first tick.
+func (d *Daemon) reconcile(ctx context.Context) error {
+	running, err := d.DB.TasksIn(ctx, db.Running)
+	if err != nil {
+		return err
+	}
+	for _, t := range running {
+		if t.Node.Valid && t.Node.String != d.Node {
+			continue
+		}
+		if d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Running}, db.Ready, db.Patch{ClearLease: true}) == nil {
+			d.DB.EndAttempt(ctx, t.ID, "crash")
+			d.DB.Event(ctx, "swarmd", t.ID, "reconciled", map[string]string{"why": "daemon restarted"})
+			d.Log.Info("reconciled after restart", "task", t.ID)
+		}
+	}
+	return nil
 }

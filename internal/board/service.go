@@ -14,6 +14,7 @@ import (
 
 	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/gitx"
+	"github.com/fortunto2/swarm/internal/worktree"
 )
 
 type Identity struct {
@@ -38,6 +39,8 @@ type Service struct {
 	Done chan<- int64
 	// BaseFor gives the current main commit of a profile repo, for a run a session starts.
 	BaseFor func(repo string) (string, error)
+	// Locate gives a task's worktree and branch (derived, never stored).
+	Locate func(t db.Task) worktree.WT
 
 	mu     sync.Mutex
 	tokens map[string]Identity
@@ -104,8 +107,9 @@ func (s *Service) GetTask(ctx context.Context, tok string) (TaskView, error) {
 	}
 	files, _ := s.DB.WriteClaims(ctx, t.ID)
 	prev, _ := s.DB.Notes(ctx, t.ID, "review", 4)
+	wt := s.Locate(t)
 	v := TaskView{ID: t.ID, Title: t.Title, Spec: t.Spec, Acceptance: t.Acceptance, Tier: t.Tier,
-		Branch: t.Branch.String, Worktree: t.Worktree.String, Files: files, Attempt: t.Attempts + 1}
+		Branch: wt.Branch, Worktree: wt.Path, Files: files, Attempt: t.Attempts + 1}
 	for _, n := range prev {
 		v.Previous = append(v.Previous, n.Body)
 	}
@@ -146,16 +150,17 @@ func (s *Service) ReportDone(ctx context.Context, tok, commit, summary string) e
 	if err != nil {
 		return err
 	}
-	if t.Status != "running" {
-		return &Error{"not_running", "task is " + t.Status + "; report_done is accepted once per attempt"}
+	if t.Status != db.Running {
+		return &Error{"not_running", "task is " + string(t.Status) + "; report_done is accepted once per attempt"}
 	}
-	wt := t.Worktree.String
+	loc := s.Locate(t)
+	wt := loc.Path
 	sha, err := gitx.Head(ctx, wt, commit)
 	if err != nil {
 		return &Error{"no_commit", "commit " + commit + " does not exist in your worktree"}
 	}
-	if !gitx.IsAncestor(ctx, wt, sha, "refs/heads/"+t.Branch.String) {
-		return &Error{"wrong_branch", "commit is not on " + t.Branch.String + "; commit to your own branch"}
+	if !gitx.IsAncestor(ctx, wt, sha, "refs/heads/"+loc.Branch) {
+		return &Error{"wrong_branch", "commit is not on " + loc.Branch + "; commit to your own branch"}
 	}
 	base, err := s.DB.RunBase(ctx, t.RunID)
 	if err != nil {
@@ -164,7 +169,10 @@ func (s *Service) ReportDone(ctx context.Context, tok, commit, summary string) e
 	if sha == base || gitx.IsAncestor(ctx, wt, sha, base) {
 		return &Error{"no_change", "the commit adds nothing over the run's base"}
 	}
-	if err := s.DB.Set(ctx, t.ID, map[string]any{"status": "verifying", "result_commit": sha}); err != nil {
+	if err := s.DB.Move(ctx, id.Actor(), t.ID, []db.Status{db.Running}, db.Verifying, db.Patch{ResultCommit: &sha, ClearLease: true}); err != nil {
+		if errors.Is(err, db.ErrStale) {
+			return &Error{"not_running", "the attempt ended before this report arrived"}
+		}
 		return err
 	}
 	s.DB.EndAttempt(ctx, t.ID, "done")
@@ -185,7 +193,10 @@ func (s *Service) ReportBlocked(ctx context.Context, tok, reason, question strin
 	if err != nil {
 		return err
 	}
-	if err := s.DB.Set(ctx, t.ID, map[string]any{"status": "blocked"}); err != nil {
+	if err := s.DB.Move(ctx, id.Actor(), t.ID, []db.Status{db.Running}, db.Blocked, db.Patch{ClearLease: true}); err != nil {
+		if errors.Is(err, db.ErrStale) {
+			return &Error{"not_running", "the attempt ended before this report arrived"}
+		}
 		return err
 	}
 	s.DB.EndAttempt(ctx, t.ID, "blocked")
