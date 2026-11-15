@@ -192,6 +192,16 @@ command = ["/bin/false"]
 	if st := status(t, coord); !strings.Contains(st, "node n1") || !strings.Contains(st, "last seen") {
 		t.Fatalf("status does not show when the node was last heard from:\n%s", st)
 	}
+	// a node on another build than the coordinator says so (the same binary here: silent)
+	if st := status(t, coord); strings.Contains(st, "runs swarm") {
+		t.Fatalf("a node on the coordinator's own build is flagged:\n%s", st)
+	}
+	if v, _ := swarm(t, coord, 10*time.Second, "version"); !strings.Contains(v, "unknown") {
+		sqlite(t, coord, `UPDATE nodes SET info=json_set(info, '$.version', '0000000') WHERE id='n1'`)
+		if st := status(t, coord); !strings.Contains(st, "runs swarm 0000000, this binary is") {
+			t.Fatalf("a node on an older build is not flagged:\n%s", st)
+		}
+	}
 	if st := status(t, nodeProf); !strings.Contains(st, "node n1 (profile n1): running") {
 		t.Fatalf("a node profile's status:\n%s", st)
 	}

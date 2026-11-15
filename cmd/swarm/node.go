@@ -121,6 +121,7 @@ func printNodes(out io.Writer, c *config.Config, d *db.DB) {
 			Admit   bool   `json:"admit"`
 			Why     string `json:"why"`
 			Running int    `json:"running"`
+			Version string `json:"version"`
 		}
 		_ = json.Unmarshal(r.Info, &info)
 		state := "online"
@@ -130,6 +131,9 @@ func printNodes(out io.Writer, c *config.Config, d *db.DB) {
 		line := fmt.Sprintf("  node %-10s %s, %d running", name, state, info.Running)
 		if state == "online" && !info.Admit {
 			line += ", holding: " + strings.TrimSpace(info.Why)
+		}
+		if self := revision(); info.Version != "" && self != "" && info.Version != self {
+			line += fmt.Sprintf("; runs swarm %s, this binary is %s: update it there", info.Version, self)
 		}
 		fmt.Fprintln(out, line)
 	}
