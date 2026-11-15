@@ -4,11 +4,12 @@ One lead, many subscriptions, merged code. `swarm` runs coding agents on the off
 CLIs you already pay for (Claude Code, Codex), each task in its own git worktree, and lets
 nothing into `main` that has not passed your tests.
 
-Status: **early**. Phase 1 works end to end on a scripted worker: a task goes
-`ready → running → verifying → merged` through the board, the gate and a fast-forward
-merge, and a worker that deletes or skips a test, touches files it does not own, or dies
-silently never reaches `main`. The lead, several providers and the sandbox are next
-(see *Roadmap*).
+Status: **early, in daily use.** A task goes `ready → running → verifying → merged`
+through the board, the gate and a fast-forward or a delivery branch, with live Claude
+workers; a worker that deletes or skips a test, touches files it does not own, or dies
+silently never reaches `main`. Several machines share one queue (nodes), an account's
+limits and budget pause it, and an upgrade drains instead of killing work. The lead (task
+trees from a spec), more provider kinds and the container sandbox are next (see *Roadmap*).
 
 ## Why
 
@@ -177,7 +178,8 @@ example config does. Any MCP server works the same way.
 5. Sandbox: workers in containers with an egress allowlist; unattended overnight runs
 6. ~~`merge = "branch"`: the gated commit goes to a branch for a human to review and push~~;
    `merge = "pr"`: the same, plus the PR description
-7. Nodes: workers on other machines over SSH, one coordinator per profile
+7. ~~Nodes: workers on other machines, one coordinator per profile~~ (machines dial in with
+   `swarm node` over ssh; runs_on labels, gates on the node, drains: docs/nodes.md)
 8. Scheduled and event work (`tick`, `event`, `script`) on the same queue
 
 Deviations from the original design are logged in `docs/DEVIATIONS.md`.
