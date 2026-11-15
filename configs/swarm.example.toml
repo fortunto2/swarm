@@ -31,6 +31,10 @@ merge = "ff"                              # "pr" leaves swarm/run-<id> for a hum
 max_workers = 6
 task_wall_clock = "45m"
 max_attempts = 4
+# On a host shared with other work: new workers and gates start only while this exits 0;
+# otherwise its first output line is logged as the reason. Asked every 15 s, off the loop.
+# ([t] keeps pgrep from matching this very command line.)
+# admit = "if pgrep -f 'nightly-[j]ob' >/dev/null; then echo nightly job runs; exit 1; fi"
 
 # The provider registry. Each entry is one subscription (one account). roles: worker
 # (default), reviewer, lead. priority: lower is tried first for a tier. budget_usd_day:

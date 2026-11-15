@@ -178,4 +178,9 @@ no files named, an acceptance the gate cannot see, a file it needs not yet commi
   path:{worktree} --workspace-status in-progress`), or note them on your own task registry.
 - `[hooks] after_merge`: e.g. reindex the repo for a code-search MCP.
 - `[mcp.<name>]`: extra MCP servers for workers (`tools` lists what they may call).
+- `[limits] admit`: a shell command asked before new workers or gates start, for a host that
+  also runs other work. Exit 0 admits; anything else holds, and its first output line is
+  logged (`held`, with the reason) once per change. Hold while another job runs, or while
+  memory is low: a type check on a big TypeScript repo can take 3 GB, and a gate that dies
+  of it is an attempt spent on nothing in the code.
 - `swarm report --since 7d`: what a week says; a weekly look at it is how the setup gets better.

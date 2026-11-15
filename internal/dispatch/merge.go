@@ -18,6 +18,9 @@ import (
 // startGates launches the gate for every verifying task not already being checked. Gates
 // run off the tick so a 15-minute suite does not freeze scheduling.
 func (d *Daemon) startGates(ctx context.Context) error {
+	if !d.admitting() {
+		return nil // a gate is the heaviest thing swarm runs; it waits for the host too
+	}
 	ts, err := d.DB.TasksIn(ctx, db.Verifying)
 	if err != nil {
 		return err

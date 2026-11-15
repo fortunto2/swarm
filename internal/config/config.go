@@ -66,6 +66,10 @@ type Limits struct {
 	TaskWallClock Duration `toml:"task_wall_clock" json:"task_wall_clock,omitempty"`
 	MaxAttempts   int      `toml:"max_attempts" json:"max_attempts,omitempty"`
 	MaxGates      int      `toml:"max_gates" json:"max_gates,omitempty"` // gates running at once; default half of max_workers
+	// Admit: a shell command asked, off the loop and at most every 15 s, before new workers
+	// or gates start. Exit 0 admits; anything else holds them, and the first output line is
+	// the reason. For a host shared with other work: hold while it runs, or while memory is low.
+	Admit string `toml:"admit" json:"admit,omitempty"`
 }
 
 type Provider struct {

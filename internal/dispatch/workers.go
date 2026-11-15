@@ -55,6 +55,9 @@ func (d *Daemon) maxWorkers() int {
 }
 
 func (d *Daemon) schedule(ctx context.Context) error {
+	if !d.admitting() {
+		return nil // the host said not now (limits.admit); asked again within 15 s
+	}
 	ready, err := d.DB.TasksIn(ctx, db.Ready)
 	if err != nil || len(ready) == 0 {
 		return err

@@ -121,6 +121,9 @@
         },
         "max_gates": {
           "type": "integer"
+        },
+        "admit": {
+          "type": "string"
         }
       },
       "additionalProperties": false

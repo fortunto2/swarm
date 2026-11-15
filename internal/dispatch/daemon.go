@@ -34,8 +34,10 @@ import (
 const (
 	prepareTimeout = 10 * time.Minute
 	tickEvery      = 2 * time.Second
-	lease          = 2 * time.Minute // extended every tick while the process lives
-	maxInfraFailed = 3               // a task the infrastructure fails 3 times goes to blocked, not round and round
+	admitEvery     = 15 * time.Second // how often limits.admit is asked
+	admitTimeout   = 10 * time.Second // a hung admit command holds, it never blocks the loop
+	lease          = 2 * time.Minute  // extended every tick while the process lives
+	maxInfraFailed = 3                // a task the infrastructure fails 3 times goes to blocked, not round and round
 )
 
 type proc struct {
@@ -84,6 +86,17 @@ type Daemon struct {
 	closing    bool          // set before bg.Wait: no bg.Add after it
 	reg        registry      // provider states and spend, refreshed each schedule pass
 	redact     redact.Filter // text swarm stores or forwards goes through it
+	admit      admission     // the last answer of limits.admit; only the loop touches it
+	admitted   chan admission
+}
+
+// admission: may new workers and gates start on this host now (limits.admit).
+type admission struct {
+	ok      bool
+	why     string
+	at      time.Time
+	asking  bool
+	checked bool
 }
 
 func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
@@ -101,6 +114,7 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 		gateCancel: map[int64]context.CancelFunc{},
 		results:    make(chan gateResult, 16),
 		wake:       wake,
+		admitted:   make(chan admission, 1),
 	}
 	for id, p := range cfg.Providers {
 		a, err := provider.New(id, p, cfg.Profile)
@@ -192,6 +206,8 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 			d.applyGate(ctx, r)
 		case s := <-d.started:
 			d.applyStart(ctx, s)
+		case a := <-d.admitted:
+			d.applyAdmit(ctx, a)
 		}
 	}
 }
@@ -199,6 +215,7 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 // Tick is one pass of PRD §7: reap, promote, schedule, gate, merge, close runs.
 func (d *Daemon) Tick(ctx context.Context) error {
 	d.reap(ctx)
+	d.askAdmit()
 	if err := d.promote(ctx); err != nil {
 		return err
 	}
@@ -466,4 +483,49 @@ func shellSafe(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// askAdmit runs limits.admit off the loop when it is due; the answer comes back on admitted.
+func (d *Daemon) askAdmit() {
+	cmdline := d.Cfg.Limits.Admit
+	if cmdline == "" || d.admit.asking || (d.admit.checked && time.Since(d.admit.at) < admitEvery) {
+		return
+	}
+	d.admit.asking = true
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), admitTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "sh", "-c", cmdline).CombinedOutput()
+		a := admission{ok: err == nil, at: time.Now(), checked: true}
+		if !a.ok {
+			a.why = strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0])
+			if a.why == "" {
+				a.why = err.Error()
+			}
+		}
+		d.admitted <- a
+	}()
+}
+
+// applyAdmit records the answer; a change is logged and kept as an event, a repeat is not.
+func (d *Daemon) applyAdmit(ctx context.Context, a admission) {
+	prev := d.admit
+	d.admit = a
+	if prev.checked && prev.ok == a.ok {
+		return
+	}
+	if a.ok {
+		if prev.checked {
+			d.Log.Info("admitted")
+			d.DB.Event(ctx, "swarmd", 0, "admitted", nil)
+		}
+		return
+	}
+	d.Log.Info("held", "why", a.why)
+	d.DB.Event(ctx, "swarmd", 0, "held", map[string]string{"why": d.redact.Apply(a.why)})
+}
+
+// admitting: no admit command, or its last answer was yes. Before the first answer, hold.
+func (d *Daemon) admitting() bool {
+	return d.Cfg.Limits.Admit == "" || (d.admit.checked && d.admit.ok)
 }

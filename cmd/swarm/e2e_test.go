@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1112,4 +1113,70 @@ exit 1
 	if !strings.Contains(prov, "cooling until") || !strings.Contains(prov, "limit hit") {
 		t.Fatalf("provider not cooling:\n%s", prov)
 	}
+}
+
+// limits.admit holds new workers while the host is busy with other work, and says why;
+// once it admits, the same task runs to merged without a restart.
+func TestAdmitHoldsWorkUntilTheHostSaysYes(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, goodWorker, 4)
+	gateFile := filepath.Join(prof, "host-free")
+	cfg := filepath.Join(prof, "swarm.toml")
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admit := fmt.Sprintf("[limits]\nadmit = \"test -e %s || { echo another job runs; exit 1; }\"\n", gateFile)
+	if err := os.WriteFile(cfg, []byte(strings.Replace(string(b), "[limits]\n", admit, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	addTask(t, prof, "two.go,two_test.go")
+	log := &lockedBuffer{}
+	daemon := exec.Command(bin, "--profile", prof, "daemon", "--until-idle")
+	daemon.Stdout, daemon.Stderr = log, log
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- daemon.Wait() }()
+	defer func() { _ = daemon.Process.Kill() }()
+	time.Sleep(5 * time.Second)
+	if st := status(t, prof); !strings.Contains(st, "ready        1") {
+		t.Fatalf("a held host started work anyway:\n%s\n%s", st, log.String())
+	}
+	if err := os.WriteFile(gateFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("daemon: %v\n%s", err, log.String())
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatalf("not done after the host admitted:\n%s", log.String())
+	}
+	if st := status(t, prof); !strings.Contains(st, "merged       1") {
+		t.Fatalf("want merged:\n%s\n%s", st, log.String())
+	}
+	if !strings.Contains(log.String(), `"msg":"held","why":"another job runs"`) {
+		t.Fatalf("the hold and its reason are not in the log:\n%s", log.String())
+	}
+}
+
+// lockedBuffer: a daemon's output read by the test while the daemon still writes it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
