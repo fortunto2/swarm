@@ -130,11 +130,14 @@ func WorkerSettings(a Attempt) string {
 // its job needs. File tools are absent: acceptEdits already allows editing inside the
 // working directory; reading is allowed anywhere by the CLI, which is why credential paths
 // get explicit deny rules (DenySettings). git diff/log/show are out: --output writes
-// anywhere. No push.
+// anywhere. No push. git reset --soft is how a worker brings resolved work onto a new base
+// (the daemon's conflict note says so); git rebase is not, since --exec runs any command
+// (found live: a worker resolved a conflict and could not commit it on the new base).
 func AllowedTools(a Attempt, extra []string) []string {
 	base := []string{"mcp__board__*",
 		"Bash(swarm gate:*)", "Bash(swarm board:*)",
-		"Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(git rev-parse:*)"}
+		"Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(git rev-parse:*)",
+		"Bash(git reset --soft:*)"}
 	var derived []string
 	for name, m := range a.ExtraMCP { // the tools listed for the server; all of them if none listed
 		if len(m.Tools) == 0 {

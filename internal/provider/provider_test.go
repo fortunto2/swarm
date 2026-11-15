@@ -34,7 +34,7 @@ func TestAllowedToolsNoPush(t *testing.T) {
 	if strings.Contains(got, "mcp__solograph__*") {
 		t.Error("a whole extra server allowed although its tools are listed")
 	}
-	for _, want := range []string{"mcp__board__*", "mcp__solograph__symbol_search", "Bash(go:*)", "Bash(make:*)", "Bash(npm ci:*)", "Bash(swarm gate:*)"} {
+	for _, want := range []string{"mcp__board__*", "mcp__solograph__symbol_search", "Bash(go:*)", "Bash(make:*)", "Bash(npm ci:*)", "Bash(swarm gate:*)", "Bash(git reset --soft:*)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %s in %s", want, got)
 		}
@@ -42,7 +42,7 @@ func TestAllowedToolsNoPush(t *testing.T) {
 	if strings.Contains(got, "Bash(sh:*)") || strings.Contains(got, "Bash(cd:*)") || strings.Contains(got, "CGO_ENABLED") {
 		t.Fatalf("a shell, cd or env prefix became a rule: %s", got)
 	}
-	for _, bad := range []string{"Read", "Write", "Edit", "Bash(cat:*)", "Bash(ls:*)", "git diff", "git log", "git show"} {
+	for _, bad := range []string{"Read", "Write", "Edit", "Bash(cat:*)", "Bash(ls:*)", "git diff", "git log", "git show", "Bash(git rebase:*)", "Bash(git reset:*)"} {
 		if strings.Contains(" "+got+" ", " "+bad+" ") || strings.Contains(got, bad+":") {
 			t.Errorf("%s allowed: it reaches outside the worktree or writes via --output", bad)
 		}

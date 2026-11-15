@@ -317,7 +317,9 @@ func (d *Daemon) rebase(ctx context.Context, t db.Task, r config.Repo, main stri
 		if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Ready, db.Patch{}); err != nil {
 			return err
 		}
-		_ = d.DB.Note(ctx, t.RunID, t.ID, "swarmd", "review", "rebase onto main conflicts: rebase your branch on "+main+" and resolve")
+		_ = d.DB.Note(ctx, t.RunID, t.ID, "swarmd", "review", "rebase onto main conflicts: bring your change onto "+main+
+			" and resolve. Make the working tree "+main+" plus your change only (git diff "+main+" lists only your files), "+
+			"then git reset --soft "+main+" and commit, and run swarm gate")
 		d.DB.Event(ctx, "swarmd", t.ID, "rebase_conflict", map[string]string{"main": main})
 		return nil
 	}
