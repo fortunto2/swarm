@@ -190,7 +190,8 @@ profile's state dir (mode 0600); a worker's per-attempt token cannot reach these
 
 Workers keep your hooks, skills and plugins: they help. What swarm watches instead is
 spend. Each attempt records tokens and dollars from the CLI's own final event (NULL when
-the CLI does not say), `swarm_status` shows the last 24 hours, and per-provider limits
+the CLI does not say). On a subscription those dollars are the CLI's list-price estimate
+of the quota used, not money billed; `budget_usd_day` caps that estimate. `swarm_status` shows the last 24 hours, and per-provider limits
 and failover arrive with several providers. A CLI that is not logged in takes its
 provider out of rotation on the first try instead of burning retries.
 
