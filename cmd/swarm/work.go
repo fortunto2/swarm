@@ -47,25 +47,33 @@ func taskCmd() *cobra.Command {
 				}
 				spec = string(b)
 			}
-			d, err := db.Open(c.DBPath())
+			in := board.AddTaskIn{Repo: repo, Title: title, Spec: spec, Acceptance: acceptance, Tier: tier,
+				Files: files, Needs: needs, Run: run, Priority: priority, Topic: topic}
+			ctx := context.Background()
+			// One writer: while the daemon runs, the task goes in through it.
+			run, id, viaDaemon, err := addViaDaemon(c, in)
 			if err != nil {
 				return err
 			}
-			defer d.Close()
-			ctx := context.Background()
-			if run == 0 {
-				base, err := gitx.Head(ctx, config.Expand(r.Path), "refs/heads/"+r.MainBranch)
+			if !viaDaemon {
+				d, err := db.Open(c.DBPath())
 				if err != nil {
 					return err
 				}
-				if run, err = d.CreateRun(ctx, "task:"+title, topic, base); err != nil {
+				defer d.Close()
+				if run == 0 {
+					base, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
+					if err != nil {
+						return err
+					}
+					if run, err = d.CreateRun(ctx, "task:"+title, topic, base); err != nil {
+						return err
+					}
+				}
+				if id, err = d.AddTask(ctx, db.NewTask{RunID: run, Repo: repo, Title: title, Spec: spec,
+					Acceptance: acceptance, Tier: tier, Priority: priority, Files: files, Needs: needs}); err != nil {
 					return err
 				}
-			}
-			id, err := d.AddTask(ctx, db.NewTask{RunID: run, Repo: repo, Title: title, Spec: spec,
-				Acceptance: acceptance, Tier: tier, Priority: priority, Files: files, Needs: needs})
-			if err != nil {
-				return err
 			}
 			state := "ready"
 			if len(needs) > 0 {
@@ -245,4 +253,28 @@ func gateCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// addViaDaemon sends the task to a running daemon under the operator token. No daemon
+// listening: viaDaemon is false and the caller writes the database itself (it is then the
+// only writer). A daemon that answers with an error is an error, never a fallback.
+func addViaDaemon(c *config.Config, in board.AddTaskIn) (run, id int64, viaDaemon bool, err error) {
+	cl, err := board.Dial(dispatch.SocketPath(c.StatePath()))
+	if err != nil {
+		return in.Run, 0, false, nil
+	}
+	defer cl.Close()
+	op, err := board.OperatorToken(c.StatePath())
+	if err != nil {
+		return 0, 0, true, err
+	}
+	raw, err := cl.Do("swarm_add_task", op, in)
+	if err != nil {
+		return 0, 0, true, err
+	}
+	var out struct{ Run, Task int64 }
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return 0, 0, true, err
+	}
+	return out.Run, out.Task, true, nil
 }

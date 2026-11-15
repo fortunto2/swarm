@@ -69,7 +69,7 @@ already orders the queue.
 | # | Step | PRD | Status |
 |---|---|---|---|
 | 12 | Never run two tasks whose write claims overlap (path or `dir/` prefix) at once | §7 Schedule, MUST | done |
-| 13 | Single writer: `swarm task add` goes through the daemon when it is running | §3, §5 MUST | |
+| 13 | Single writer: `swarm task add` goes through the daemon when it is running | §3, §5 MUST | done |
 | 14 | Worker env: `DISABLE_AUTOUPDATER=1`, a slot number, `PORT=20000+slot*10` | §8, §12 | done |
 | 15 | Provider registry: `roles`, `priority`, `budget_usd_day` (spent → cooling to next UTC midnight); live state in `providers`; `swarm providers` and in `swarm_status` | §2, §7, §11 | |
 | 16 | Notify on run done and on a task blocked; `caffeinate` on macOS while running; hourly `git worktree prune` | §11, §12, §8 | |

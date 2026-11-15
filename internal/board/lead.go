@@ -53,6 +53,7 @@ type AddTaskIn struct {
 	Tier       string   `json:"tier,omitempty"`
 	Files      []string `json:"files,omitempty"`
 	Needs      []int64  `json:"needs,omitempty"`
+	Topic      string   `json:"topic,omitempty" jsonschema:"a harness topic id this run serves"`
 	Run        int64    `json:"run,omitempty"`
 	Priority   int      `json:"priority,omitempty"`
 }
@@ -80,7 +81,7 @@ func (s *Service) AddTask(ctx context.Context, tok string, in AddTaskIn) (map[st
 		if err != nil {
 			return nil, &Error{"bad_repo", err.Error()}
 		}
-		if run, err = s.DB.CreateRun(ctx, "session:"+in.Title, "", base); err != nil {
+		if run, err = s.DB.CreateRun(ctx, "session:"+in.Title, in.Topic, base); err != nil {
 			return nil, err
 		}
 	}

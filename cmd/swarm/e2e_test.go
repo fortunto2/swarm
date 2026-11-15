@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/fortunto2/swarm/internal/dispatch"
 )
 
 var bin string
@@ -485,5 +487,40 @@ swarm board done "$(git rev-parse HEAD)"
 	}
 	if st := status(t, prof); !strings.Contains(st, "merged       2") {
 		t.Fatalf("want both merged:\n%s", st)
+	}
+}
+
+// One writer: while the daemon runs, the CLI's task add goes in through it (an operator
+// event is recorded), and the task is picked up without a restart.
+func TestTaskAddGoesThroughARunningDaemon(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, goodWorker, 4)
+	if out, err := swarm(t, prof, 30*time.Second, "init"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	daemon := exec.Command(bin, "--profile", prof, "daemon")
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() }()
+	sock := dispatch.SocketPath(filepath.Join(prof, "state"))
+	for i := 0; i < 100; i++ {
+		if _, err := os.Stat(sock); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	addTask(t, prof, "two.go,two_test.go")
+	ev, _ := exec.Command("sqlite3", filepath.Join(prof, "state", "swarm.db"),
+		"SELECT actor FROM events WHERE type='task_added'").CombinedOutput()
+	if !strings.Contains(string(ev), "lead") {
+		t.Fatalf("task add bypassed the daemon (no operator event): %q", ev)
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	for !strings.Contains(status(t, prof), "merged       1") {
+		if time.Now().After(deadline) {
+			t.Fatalf("not merged:\n%s", status(t, prof))
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
 }
