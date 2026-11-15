@@ -47,6 +47,8 @@ type Service struct {
 	Repo func(name string) (config.Repo, error)
 	// Strict: the profile's safety level (files required on tasks).
 	Strict bool
+	// Redact filters text a worker sends before it is stored or forwarded; nil = as is.
+	Redact func(string) string
 	// Notify tells the operator (the profile's notifier); nil means nobody is listening.
 	Notify func(msg string)
 	// Providers gives the provider registry view (declared + live).
@@ -153,7 +155,7 @@ func (s *Service) PostNote(ctx context.Context, tok, kind, body string) error {
 	if n, err := s.DB.NoteCount(ctx, t.ID); err == nil && n >= maxNotesPerTask {
 		return &Error{"too_many_notes", "this task already has the maximum of notes; post the gist, not a stream"}
 	}
-	return s.DB.Note(ctx, t.RunID, t.ID, id.Actor(), kind, body)
+	return s.DB.Note(ctx, t.RunID, t.ID, id.Actor(), kind, s.clean(body))
 }
 
 // ReportDone hands the work to the gate. It does not count the task as done.
@@ -192,7 +194,7 @@ func (s *Service) ReportDone(ctx context.Context, tok, commit, summary string) e
 		return err
 	}
 	s.DB.EndAttempt(ctx, t.ID, "done")
-	s.DB.Event(ctx, id.Actor(), t.ID, "report_done", map[string]string{"commit": sha, "summary": summary})
+	s.DB.Event(ctx, id.Actor(), t.ID, "report_done", map[string]string{"commit": sha, "summary": s.clean(summary)})
 	s.signal(t.ID)
 	return nil
 }
@@ -209,6 +211,7 @@ func (s *Service) ReportBlocked(ctx context.Context, tok, reason, question strin
 	if err != nil {
 		return err
 	}
+	reason, question = s.clean(reason), s.clean(question)
 	if err := s.DB.Move(ctx, id.Actor(), t.ID, []db.Status{db.Running}, db.Blocked, db.Patch{ClearLease: true}); err != nil {
 		if errors.Is(err, db.ErrStale) {
 			return &Error{"not_running", "the attempt ended before this report arrived"}
@@ -275,4 +278,11 @@ func (s *Service) GateSpec(ctx context.Context, tok string) (GateSpec, error) {
 	files, _ := s.DB.WriteClaims(ctx, t.ID)
 	return GateSpec{Commands: r.Gate, TimeoutSec: int(r.GateTimeout.Seconds()), Base: base, Files: files,
 		AllowTests: gate.AllowsTestChanges(t.Spec), Protected: gate.GrantsFrom(t.Spec).Protected, Reruns: r.Reruns()}, nil
+}
+
+func (s *Service) clean(text string) string {
+	if s.Redact == nil {
+		return text
+	}
+	return s.Redact(text)
 }

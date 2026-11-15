@@ -10,6 +10,15 @@ worktree_root = "~/.swarm/wt/example"     # outside every repo
 notify = "echo"                           # command; the message is appended as the last arg
 harness = ""                              # harness-core profile dir for runs.jsonl, optional
 safety = "trusted"                        # trusted (default): guards against mistakes; strict: workers untrusted, OS sandbox
+# Secrets live in the OS keystore, never in this file or the daemon's env. A provider key
+# (ANTHROPIC_AUTH_TOKEN = "secret:kimi") becomes the CLI's apiKeyHelper; an MCP server's
+# secret reaches its process through secret_exec. Any keystore CLI with get/exec works:
+# github.com/fortunto2/solo-factory (skills/secrets) is one.
+secret_cmd = ["solo", "secret", "get"]
+secret_exec = ["solo", "secret", "exec"]
+# What swarm stores or forwards outside Claude (gate output, worker notes, notifications)
+# goes through this filter first; a failing filter withholds the text.
+redact = ["python3", "/path/to/solo-factory/hooks/secret_guard.py", "filter"]
 
 [repos.app]
 path = "~/code/app"

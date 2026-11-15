@@ -208,3 +208,44 @@ func TestClaudeCommandTrusted(t *testing.T) {
 		t.Fatalf("trusted: credential paths denied, CLAUDE.md editable: %s", args)
 	}
 }
+
+// A provider key held in the keystore reaches the CLI through apiKeyHelper, never env;
+// an MCP server's secret reaches its own process through secret_exec, never the file.
+func TestSecretsStayOutOfEnvAndFiles(t *testing.T) {
+	prof := config.Profile{SecretCmd: []string{"solo", "secret", "get"}, SecretExec: []string{"solo", "secret", "exec"}}
+	p := config.Provider{Kind: "claude", Env: map[string]string{"ANTHROPIC_AUTH_TOKEN": "secret:kimi", "ANTHROPIC_BASE_URL": "https://example.com"}}
+	dir := t.TempDir()
+	a := Attempt{TaskID: 1, Worktree: "/wt", Dir: dir, Prompt: "p", Socket: "/s", Token: "t", SwarmBin: "/bin/swarm",
+		ExtraMCP: map[string]config.MCPServer{"idx": {Command: "idx", Args: []string{"serve"}, Env: map[string]string{"IDX_TOKEN": "secret:idx", "MODE": "ro"}}}}
+	cmd, err := claude{p: p, prof: prof}.Command(context.Background(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "ANTHROPIC_AUTH_TOKEN=") {
+			t.Fatalf("key in env: %s", kv)
+		}
+	}
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, `"apiKeyHelper":"'solo' 'secret' 'get' 'kimi'"`) {
+		t.Fatalf("no apiKeyHelper in settings: %s", args)
+	}
+	if !strings.Contains(strings.Join(cmd.Env, " "), "ANTHROPIC_BASE_URL=https://example.com") {
+		t.Fatal("non-secret env dropped")
+	}
+	mcp, _ := os.ReadFile(filepath.Join(dir, "mcp.json"))
+	var cfg struct {
+		MCPServers map[string]struct {
+			Command string
+			Args    []string
+			Env     map[string]string
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(mcp, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	idx := cfg.MCPServers["idx"]
+	if idx.Command != "solo" || strings.Join(idx.Args, " ") != "secret exec idx=IDX_TOKEN -- idx serve" || idx.Env["MODE"] != "ro" || idx.Env["IDX_TOKEN"] != "" {
+		t.Fatalf("mcp server not wrapped: %+v", idx)
+	}
+}

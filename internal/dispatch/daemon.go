@@ -27,6 +27,7 @@ import (
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/provider"
+	"github.com/fortunto2/swarm/internal/redact"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
@@ -80,8 +81,9 @@ type Daemon struct {
 	prepCtx    context.Context // parent of every prepare; cancelled at shutdown
 	prepCancel context.CancelFunc
 	notifyMu   sync.Mutex
-	closing    bool     // set before bg.Wait: no bg.Add after it
-	reg        registry // provider states and spend, refreshed each schedule pass
+	closing    bool          // set before bg.Wait: no bg.Add after it
+	reg        registry      // provider states and spend, refreshed each schedule pass
+	redact     redact.Filter // text swarm stores or forwards goes through it
 }
 
 func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
@@ -109,6 +111,7 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 		dm.adapters[id] = a
 	}
 	dm.prepCtx, dm.prepCancel = context.WithCancel(context.Background())
+	dm.redact = redact.Filter(cfg.Profile.Redact)
 	if len(dm.adapters) == 0 {
 		return nil, fmt.Errorf("no usable provider in profile %s", cfg.Profile.Name)
 	}
@@ -130,6 +133,7 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	d.Board.IssueFixed(op, board.Identity{Role: "lead"})
 	d.Board.Locate = d.locate
 	d.Board.Notify = d.notify
+	d.Board.Redact = d.redact.Apply
 	d.Board.Strict = d.Cfg.Strict()
 	keepAwake()
 	d.Board.Repo = d.repo

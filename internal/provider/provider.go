@@ -23,20 +23,51 @@ import (
 // the log; it lives in the profile's state, never in the worktree (an agent's `git add -A`
 // would commit it).
 type Attempt struct {
-	TaskID   int64
-	Worktree string
-	Dir      string
-	Prompt   string
-	Model    string
-	Socket   string
-	Token    string
-	SwarmBin string
-	ExtraMCP map[string]config.MCPServer
-	Gate     []string       // the repo's gate commands; their programs are allowed to run
-	Slot     int            // the worker's slot: its port range and anything else that must not collide
-	Deny     []string       // absolute paths the worker may neither read nor edit (state, accounts, keys)
-	Sandbox  config.Sandbox // OS confinement of the worker's Bash and its children
-	Strict   bool           // safety = strict: the worker is treated as untrusted
+	TaskID    int64
+	Worktree  string
+	Dir       string
+	Prompt    string
+	Model     string
+	Socket    string
+	Token     string
+	SwarmBin  string
+	ExtraMCP  map[string]config.MCPServer
+	Gate      []string       // the repo's gate commands; their programs are allowed to run
+	Slot      int            // the worker's slot: its port range and anything else that must not collide
+	Deny      []string       // absolute paths the worker may neither read nor edit (state, accounts, keys)
+	Sandbox   config.Sandbox // OS confinement of the worker's Bash and its children
+	Strict    bool           // safety = strict: the worker is treated as untrusted
+	KeyHelper string         // shell command printing the provider key (set by the adapter)
+}
+
+// keyVars: the variables a Claude-compatible CLI reads its key from. A secret: reference
+// in one of them becomes an apiKeyHelper instead of an environment value.
+var keyVars = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
+
+// keyHelper splits a provider's env: a secret: key reference turns into a helper command
+// (the profile's secret_cmd + name, shell-quoted); the rest stays env.
+func keyHelper(env map[string]string, prof config.Profile) (string, map[string]string) {
+	if len(prof.SecretCmd) == 0 {
+		return "", env
+	}
+	rest := map[string]string{}
+	helper := ""
+	for k, v := range env {
+		if slices.Contains(keyVars, k) && strings.HasPrefix(v, "secret:") && helper == "" {
+			helper = shellJoin(append(append([]string{}, prof.SecretCmd...), strings.TrimPrefix(v, "secret:")))
+			continue
+		}
+		rest[k] = v
+	}
+	return helper, rest
+}
+
+func shellJoin(argv []string) string {
+	q := make([]string, len(argv))
+	for i, a := range argv {
+		q[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(q, " ")
 }
 
 // WorkerSettings: the --settings JSON of a worker.
@@ -67,6 +98,9 @@ func WorkerSettings(a Attempt) string {
 		}
 	}
 	settings := map[string]any{"permissions": map[string]any{"deny": rules}}
+	if a.KeyHelper != "" {
+		settings["apiKeyHelper"] = a.KeyHelper // the CLI asks the keystore; no key in env or files
+	}
 	if a.Sandbox.On(a.Strict) {
 		domains := a.Sandbox.AllowedDomains
 		if domains == nil {
@@ -212,6 +246,10 @@ type claude struct {
 // Flags per PRD §8, checked against claude 2.1.325 --help. Subagents are off by flag, not by
 // prose: Agent is the current name, Task the old one, Workflow fans out too.
 func (c claude) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
+	helper, env := keyHelper(c.p.Env, c.prof)
+	a.KeyHelper = helper
+	p := c.p
+	p.Env = env
 	mcpPath, err := WriteMCPConfig(ctx, a, c.prof)
 	if err != nil {
 		return nil, err
@@ -235,7 +273,7 @@ func (c claude) Command(ctx context.Context, a Attempt) (*exec.Cmd, error) {
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
-	cmd, err := baseCmd(ctx, "claude", args, a, c.p, c.prof)
+	cmd, err := baseCmd(ctx, "claude", args, a, p, c.prof)
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +292,16 @@ func WriteMCPConfig(ctx context.Context, a Attempt, prof config.Profile) (string
 		"env": map[string]string{"SWARM_TOKEN": a.Token},
 	}}
 	for name, m := range a.ExtraMCP {
+		if command, args, rest, ok := wrapSecrets(m, prof); ok {
+			// secrets reach the server's own process through the keystore's exec: the
+			// config file holds their names only
+			envMap, err := envMapOf(ctx, rest, prof)
+			if err != nil {
+				return "", fmt.Errorf("mcp %s: %w", name, err)
+			}
+			servers[name] = map[string]any{"command": command, "args": args, "env": envMap}
+			continue
+		}
 		env, err := ResolveEnv(ctx, m.Env, prof)
 		if err != nil {
 			return "", fmt.Errorf("mcp %s: %w", name, err)
@@ -293,6 +341,41 @@ func baseCmd(ctx context.Context, name string, args []string, a Attempt, p confi
 	}
 	cmd.Env = append(append(base, env...), SwarmEnv(a)...)
 	return cmd, nil
+}
+
+// wrapSecrets: with secret_exec configured and secret: refs in a server's env, the server
+// is started as `<secret_exec> NAME=ENV... -- command args`.
+func wrapSecrets(m config.MCPServer, prof config.Profile) (string, []string, map[string]string, bool) {
+	if len(prof.SecretExec) == 0 {
+		return "", nil, nil, false
+	}
+	var pairs []string
+	rest := map[string]string{}
+	for _, k := range slices.Sorted(maps.Keys(m.Env)) {
+		if v := m.Env[k]; strings.HasPrefix(v, "secret:") {
+			pairs = append(pairs, strings.TrimPrefix(v, "secret:")+"="+k)
+		} else {
+			rest[k] = v
+		}
+	}
+	if len(pairs) == 0 {
+		return "", nil, nil, false
+	}
+	args := append(append(append(append([]string{}, prof.SecretExec[1:]...), pairs...), "--", config.Expand(m.Command)), m.Args...)
+	return prof.SecretExec[0], args, rest, true
+}
+
+func envMapOf(ctx context.Context, env map[string]string, prof config.Profile) (map[string]string, error) {
+	resolved, err := ResolveEnv(ctx, env, prof)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, kv := range resolved {
+		k, v, _ := strings.Cut(kv, "=")
+		out[k] = v
+	}
+	return out, nil
 }
 
 type mock struct {

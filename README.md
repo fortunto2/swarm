@@ -74,6 +74,14 @@ environment allowlist, explicit tool lists for extra MCP servers, files required
 task, and protected paths and shrinking tests fail the gate. The sandbox can also be
 switched on alone with `[sandbox] enabled = true`.
 
+**Secrets** stay in the OS keystore. `secret_cmd` and `secret_exec` in the profile point at
+a keystore CLI: a provider key written as `secret:<name>` becomes Claude Code's
+`apiKeyHelper` (asked at request time, never in env or a file), and an MCP server's
+secrets reach its own process through `secret_exec`, so its config file names them only.
+Text swarm stores or forwards outside Claude (gate output, worker notes and questions,
+notifications) goes through the `redact` filter first; if the filter fails, the text is
+withheld rather than forwarded.
+
 Blocked tasks wait for a person: `swarm task retry <id>` (counters reset) or
 `swarm task cancel <id>` (a running worker is stopped), or the same through MCP.
 

@@ -383,6 +383,7 @@ func (d *Daemon) notify(msg string) {
 	if d.Cfg.Profile.Notify == "" {
 		return
 	}
+	msg = d.redact.Apply(msg) // a notification leaves the machine
 	d.notifyMu.Lock()
 	if d.closing { // after Wait began, Add would race it: send now instead, bounded
 		d.notifyMu.Unlock()
@@ -445,6 +446,7 @@ func (d *Daemon) fail(ctx context.Context, id int64, from db.Status, kind failKi
 		return
 	}
 	d.DB.EndAttempt(ctx, id, outcome)
+	detail = d.redact.Apply(detail) // test output can print the environment; it reaches the next prompt
 	if kind == modelFail {
 		_ = d.DB.Note(ctx, t.RunID, id, "swarmd", "review", fmt.Sprintf("attempt %d: %s\n%s", n, outcome, detail))
 	}

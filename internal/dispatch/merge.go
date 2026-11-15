@@ -94,7 +94,7 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 			d.Cfg.Profile.Name, r.taskID, strings.Join(r.v.Flaky, "; ")))
 	}
 	if !r.v.OK {
-		d.DB.Event(ctx, "swarmd", r.taskID, "gate_fail_detail", map[string]string{"tail": r.v.Tail})
+		d.DB.Event(ctx, "swarmd", r.taskID, "gate_fail_detail", map[string]string{"tail": d.redact.Apply(r.v.Tail)})
 		detail := r.v.Stage + ": " + r.v.Reason + "\n" + r.v.Tail
 		if n, _ := d.DB.EventCountWith(ctx, r.taskID, "rebased", r.commit); n > 0 {
 			detail = "this was your commit rebased by the daemon onto the current main; it fails there, " +
@@ -190,7 +190,7 @@ func (d *Daemon) afterMerge(ctx context.Context, id int64, repo, path, commit st
 		cancel()
 		data := map[string]string{"cmd": cmdline}
 		if err != nil {
-			data["err"], data["out"] = err.Error(), gate.Tail(string(out), 1024)
+			data["err"], data["out"] = err.Error(), d.redact.Apply(gate.Tail(string(out), 1024))
 			d.Log.Warn("after_merge hook failed", "task", id, "cmd", cmdline, "err", err)
 		}
 		d.DB.Event(ctx, "swarmd", id, "hook_after_merge", data)

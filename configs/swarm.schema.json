@@ -28,6 +28,24 @@
             "type": "string"
           }
         },
+        "secret_exec": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "redact": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "project_rules": {
           "type": "string"
         },

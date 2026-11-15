@@ -792,3 +792,29 @@ func needSqlite(t *testing.T) {
 }
 
 func alive(pid string) bool { return exec.Command("kill", "-0", pid).Run() == nil }
+
+// What a worker sends and what swarm forwards goes through the profile's redaction filter:
+// a key in a worker's question reaches neither the database nor the notification.
+func TestRedactionFilter(t *testing.T) {
+	needSqlite(t)
+	repo := testbed(t)
+	notes := filepath.Join(t.TempDir(), "notes")
+	worker := `swarm board blocked "the key sk-live-abc123 fails" "should I use sk-live-abc123?"` + "\n"
+	prof := profile(t, repo, worker, 2)
+	toml := filepath.Join(prof, "swarm.toml")
+	b, _ := os.ReadFile(toml)
+	extra := fmt.Sprintf("notify = \"printf '%%s\\\\n' >> %s\"\nredact = [\"sed\", \"s/sk-live-[a-z0-9]*/[REDACTED]/g\"]\n\n[repos.app]", notes)
+	_ = os.WriteFile(toml, []byte(strings.Replace(string(b), "[repos.app]", extra, 1)), 0o600)
+	addTask(t, prof, "")
+	if out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	dump, _ := exec.Command("sqlite3", filepath.Join(prof, "state", "swarm.db"), "SELECT body FROM notes; SELECT data FROM events").CombinedOutput()
+	sent, _ := os.ReadFile(notes)
+	if strings.Contains(string(dump)+string(sent), "sk-live-abc123") {
+		t.Fatalf("the key got through:\n%s\n%s", dump, sent)
+	}
+	if !strings.Contains(string(dump), "[REDACTED]") || !strings.Contains(string(sent), "[REDACTED]") {
+		t.Fatalf("nothing was redacted (the filter did not run):\n%s\n%s", dump, sent)
+	}
+}
