@@ -899,3 +899,26 @@ swarm board done "$(git rev-parse HEAD)"
 		time.Sleep(300 * time.Millisecond)
 	}
 }
+
+// merge = "branch": the gated commit is delivered as a branch for review; main never moves.
+func TestBranchMergeDeliversForReview(t *testing.T) {
+	repo := testbed(t)
+	prof := profile(t, repo, goodWorker, 4)
+	toml := filepath.Join(prof, "swarm.toml")
+	b, _ := os.ReadFile(toml)
+	_ = os.WriteFile(toml, []byte(strings.Replace(string(b), `merge = "ff"`, "merge = \"branch\"\nbranch_prefix = \"review/\"", 1)), 0o600)
+	before := sh(t, repo, "git rev-parse main")
+	addTask(t, prof, "")
+	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if sh(t, repo, "git rev-parse main") != before {
+		t.Fatal("branch mode moved main")
+	}
+	if msg := sh(t, repo, "git log -1 --format=%s review/T1"); !strings.Contains(msg, "add Two") {
+		t.Fatalf("review/T1 is %q", msg)
+	}
+	if !strings.Contains(status(t, prof), "merged       1") {
+		t.Fatalf("want the task settled as delivered:\n%s", status(t, prof))
+	}
+}

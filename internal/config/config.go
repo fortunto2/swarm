@@ -55,7 +55,10 @@ type Repo struct {
 	Gate        []string `toml:"gate" json:"gate,omitempty"`
 	GateTimeout Duration `toml:"gate_timeout" json:"gate_timeout,omitempty"`
 	Merge       string   `toml:"merge" json:"merge,omitempty"`
-	GateReruns  *int     `toml:"gate_reruns" json:"gate_reruns,omitempty"` // reruns of a failed gate command (flaky tests); default 1 // "ff": ff-only into main; "pr": leave a branch for a human PR
+	// merge = "branch": the gated commit (rebased on main) is published as BranchPrefix+"T<id>"
+	// for a person or a review process to merge; main is never touched. Default "swarm/done/".
+	BranchPrefix string `toml:"branch_prefix" json:"branch_prefix,omitempty"`
+	GateReruns   *int   `toml:"gate_reruns" json:"gate_reruns,omitempty"` // reruns of a failed gate command (flaky tests); default 1 // "ff": ff-only into main; "pr": leave a branch for a human PR
 }
 
 type Limits struct {
@@ -154,7 +157,7 @@ type Config struct {
 var (
 	kinds         = []string{"claude", "codex", "mock"}
 	tiers         = []string{"S", "A", "B"}
-	merges        = []string{"ff", "pr"}
+	merges        = []string{"ff", "branch", "pr"}
 	roles         = []string{"supervisor", "tree", "tick", "script", "event"}
 	providerRoles = []string{"worker", "reviewer", "lead"}
 	secretKey     = regexp.MustCompile(`(?i)(TOKEN|KEY|SECRET|PASSW|CREDENTIAL|AUTH|DSN|COOKIE|SESSION)`)
@@ -229,6 +232,9 @@ func (c *Config) defaults() {
 		}
 		if r.GateTimeout.Duration == 0 {
 			r.GateTimeout.Duration = 15 * time.Minute
+		}
+		if r.BranchPrefix == "" {
+			r.BranchPrefix = "swarm/done/"
 		}
 		if r.GateReruns == nil {
 			one := 1

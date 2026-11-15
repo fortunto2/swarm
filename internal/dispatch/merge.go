@@ -131,8 +131,8 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	if err != nil {
 		return err
 	}
-	if r.Merge != "ff" {
-		return fmt.Errorf("repo %s: merge %q lands in phase 6", t.Repo, r.Merge)
+	if r.Merge != "ff" && r.Merge != "branch" {
+		return fmt.Errorf("repo %s: merge %q is not built yet", t.Repo, r.Merge)
 	}
 	wt := d.locate(t)
 	main, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
@@ -145,7 +145,14 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	if cur, err := d.DB.GetTask(ctx, t.ID); err != nil || cur.Status != db.Merging {
 		return nil // left the queue meanwhile
 	}
-	if err := ffMain(ctx, r, t.ResultCommit.String, main); err != nil {
+	if r.Merge == "branch" {
+		// delivered for review: the gated commit, on top of main, as a branch of its own
+		name := r.BranchPrefix + fmt.Sprintf("T%d", t.ID)
+		if _, err := gitx.Run(ctx, r.Path, "branch", "-f", name, t.ResultCommit.String); err != nil {
+			return err
+		}
+		d.DB.Event(ctx, "swarmd", t.ID, "delivered", map[string]string{"branch": name, "commit": t.ResultCommit.String})
+	} else if err := ffMain(ctx, r, t.ResultCommit.String, main); err != nil {
 		if now, herr := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch); herr == nil && now != main {
 			return nil // someone moved main meanwhile: next tick rebases onto it
 		}
