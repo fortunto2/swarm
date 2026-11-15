@@ -64,6 +64,11 @@ Two things people get wrong:
   inherits the daemon's `CLAUDE_CONFIG_DIR`, `ANTHROPIC_*` or OAuth token.
 - **Secrets are references, never values**: `secret:<name>` (resolved by `secret_cmd`, e.g.
   a keystore CLI) or `env:<VAR>`. `swarm check` refuses a literal token.
+- **`main_branch` must be fresh.** swarm never fetches; every task branches from what
+  `main_branch` names. A checkout nobody pulls (you work in other worktrees, others push)
+  hands workers an old base. Point it at the remote ref (`refs/remotes/origin/main`, with
+  `merge = "branch"`) and let your own fetches move it; `swarm check` warns when a local
+  main is behind its upstream.
 
 ## 3. The daemon, always on (macOS launchd)
 
