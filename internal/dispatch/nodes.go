@@ -46,6 +46,7 @@ type nodeState struct {
 	seen    time.Time
 	admit   bool
 	why     string
+	warn    string // the node's own: what fails to stay in step
 	live    []string
 	cmds    []board.NodeCmd
 	wake    chan struct{}
@@ -181,7 +182,7 @@ func (h *hub) Poll(ctx context.Context, in board.NodePoll) (board.NodeOrders, er
 		h.mu.Unlock()
 		return board.NodeOrders{}, err
 	}
-	n.seen, n.admit, n.why, n.live = time.Now(), in.Admit, in.Why, in.Live
+	n.seen, n.admit, n.why, n.live, n.warn = time.Now(), in.Admit, in.Why, in.Live, in.Warn
 	if n.proto < board.NodeProtocol { // its running work and gates go on; nothing new starts there
 		n.admit, n.why = false, outdated(n.proto)
 	}
@@ -346,7 +347,7 @@ func (h *hub) record(ctx context.Context, name string) {
 		h.mu.Unlock()
 		return
 	}
-	info := map[string]any{"admit": n.admit, "why": n.why, "running": len(n.live), "version": n.version,
+	info := map[string]any{"admit": n.admit, "why": n.why, "warn": n.warn, "running": len(n.live), "version": n.version,
 		"repos": slices.Sorted(maps.Keys(n.repos))}
 	h.mu.Unlock()
 	if err := h.d.DB.NodeSeen(ctx, name, info); err != nil {

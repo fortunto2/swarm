@@ -276,3 +276,29 @@ func TestAnOutdatedNodeTakesNoNewWork(t *testing.T) {
 		t.Fatalf("why = %q, want the reason to upgrade", why)
 	}
 }
+
+// What a node fails to keep in step reaches the coordinator's record (and so `swarm status`).
+func TestANodesSyncWarningIsRecorded(t *testing.T) {
+	sdb, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+	ctx := context.Background()
+	cfg := &config.Config{Repos: map[string]config.Repo{"app": {}}, Nodes: map[string]config.Node{"mac": {Host: "remote", Accounts: []string{"m"}}}}
+	cfg.Limits.NodeTimeout.Duration = time.Minute
+	d := &Daemon{Cfg: cfg, DB: sdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	d.hub = newHub(d)
+	d.nodeEv = make(chan nodeEvent, 8)
+	w, err := d.hub.Hello(ctx, board.NodeHello{Name: "mac", Protocol: board.NodeProtocol, Root: "/wt", Repos: []string{"app"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.hub.Poll(ctx, board.NodePoll{Session: w.Session, Admit: true, Warn: "app publish refs/heads/main: Token has expired"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := sdb.Nodes(ctx)
+	if err != nil || len(rows) != 1 || !strings.Contains(string(rows[0].Info), "Token has expired") {
+		t.Fatalf("node record: %+v %v", rows, err)
+	}
+}

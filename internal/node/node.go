@@ -70,6 +70,7 @@ type Node struct {
 	adapters map[string]provider.Adapter
 	running  map[string]*attempt // by worker name
 	mains    map[string]string   // coordinator main per repo, as last fetched
+	syncErr  map[string]string   // by repo and step: the last failure of keeping in step, until it works again
 	synced   time.Time
 	admit    bool
 	why      string
@@ -253,8 +254,11 @@ func (n *Node) session1(ctx context.Context) error {
 		}
 		n.refreshAdmit(ctx)
 		var orders board.NodeOrders
+		n.mu.Lock()
+		warn := n.syncWarnLocked()
+		n.mu.Unlock()
 		err := n.call(ctx, "node_poll", board.NodePoll{Session: n.session, Admit: n.admit, Why: n.why,
-			Live: n.live(), Wait: pollWait, Cool: n.cooling()}, &orders)
+			Live: n.live(), Wait: pollWait, Cool: n.cooling(), Warn: warn}, &orders)
 		if err != nil {
 			var be *board.Error
 			if errors.As(err, &be) && be.Code == "stale_session" {
@@ -789,7 +793,9 @@ func (n *Node) keepInStep(ctx context.Context, mains map[string]string) {
 		}
 		moved := mains[name] != "" && mains[name] != n.mains[name]
 		if moved {
-			if err := n.fetchMain(ctx, name); err == nil {
+			err := n.fetchMain(ctx, name)
+			n.noteSync(name+" fetch main", err)
+			if err == nil {
 				n.mains[name] = mains[name]
 				if r.Land == "ff" {
 					n.land(ctx, name, r, mains[name])
@@ -798,7 +804,8 @@ func (n *Node) keepInStep(ctx context.Context, mains map[string]string) {
 		}
 		if (moved || periodic) && v.Merge == "branch" && v.Prefix != "" {
 			// non-forced: a local branch of the same name that moved on is left alone
-			_, _ = gitx.Transfer(ctx, r.Path, "fetch", "--quiet", r.Remote, "refs/heads/"+v.Prefix+"*:refs/heads/"+v.Prefix+"*")
+			_, err := gitx.Transfer(ctx, r.Path, "fetch", "--quiet", r.Remote, "refs/heads/"+v.Prefix+"*:refs/heads/"+v.Prefix+"*")
+			n.noteSync(name+" fetch deliveries", err)
 		}
 		if periodic {
 			n.publish(ctx, name, r)
@@ -838,10 +845,69 @@ func (n *Node) publish(ctx context.Context, name string, r config.Repo) {
 		pctx, cancel := context.WithTimeout(ctx, publishLimit)
 		_, err := gitx.Transfer(pctx, r.Path, "push", "--quiet", r.Remote, p.From+":"+p.To)
 		cancel()
+		n.noteSync(name+" publish "+p.From, err)
 		if err != nil {
 			n.Log.Warn("publish", "repo", name, "ref", p.From, "err", err)
 		}
 	}
+}
+
+// noteSync records whether one step of keeping in step with the coordinator worked. A failing
+// one is told to the coordinator in every poll and written to state/sync-warn for `swarm
+// status` here: the link itself can stay up while new connections fail (seen live: an
+// expired cloud login behind the ssh proxy; the node read online for an hour while its main
+// stopped reaching the coordinator, so new tasks would branch from a stale one).
+func (n *Node) noteSync(step string, err error) {
+	n.mu.Lock()
+	if n.syncErr == nil {
+		n.syncErr = map[string]string{}
+	}
+	if err == nil {
+		delete(n.syncErr, step)
+	} else {
+		n.syncErr[step] = errLine(err.Error())
+	}
+	warn := n.syncWarnLocked()
+	n.mu.Unlock()
+	path := SyncWarnFile(n.Cfg.StatePath())
+	if warn == "" {
+		_ = os.Remove(path)
+		return
+	}
+	_ = os.WriteFile(path, []byte(warn+"\n"), 0o600)
+}
+
+// SyncWarnFile: where a node keeps what fails to stay in step, for `swarm status` there.
+func SyncWarnFile(state string) string { return filepath.Join(state, "sync-warn") }
+
+func (n *Node) syncWarnLocked() string {
+	var parts []string
+	for _, step := range slices.Sorted(maps.Keys(n.syncErr)) {
+		parts = append(parts, step+": "+n.syncErr[step])
+	}
+	return strings.Join(parts, "; ")
+}
+
+// errLine: the line of a git/ssh error that says why ("ERROR", "fatal", "denied"), not the
+// command echo; at most 160 characters.
+func errLine(msg string) string {
+	lines := strings.FieldsFunc(msg, func(r rune) bool { return r == '\n' || r == '\r' })
+	pick := ""
+	for _, l := range lines {
+		ll := strings.ToLower(l)
+		if strings.Contains(ll, "error") || strings.Contains(ll, "fatal") || strings.Contains(ll, "denied") ||
+			strings.Contains(ll, "expired") || strings.Contains(ll, "timed out") || strings.Contains(ll, "refused") {
+			pick = strings.TrimSpace(l)
+			break
+		}
+	}
+	if pick == "" && len(lines) > 0 {
+		pick = strings.TrimSpace(lines[0])
+	}
+	if len(pick) > 160 {
+		pick = pick[:160]
+	}
+	return pick
 }
 
 // serveWorkers: the board socket workers on this machine use, forwarded to the coordinator.

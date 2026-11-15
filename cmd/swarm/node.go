@@ -130,6 +130,7 @@ func printNodes(out io.Writer, c *config.Config, d *db.DB) {
 		var info struct {
 			Admit   bool   `json:"admit"`
 			Why     string `json:"why"`
+			Warn    string `json:"warn"`
 			Running int    `json:"running"`
 			Version string `json:"version"`
 		}
@@ -142,6 +143,9 @@ func printNodes(out io.Writer, c *config.Config, d *db.DB) {
 		line := fmt.Sprintf("  node %-10s %s, %d running", name, state, info.Running)
 		if state == "online" && !info.Admit {
 			line += ", holding: " + strings.TrimSpace(info.Why)
+		}
+		if state == "online" && info.Warn != "" { // the link holds, keeping in step does not
+			line += "; out of step: " + info.Warn
 		}
 		if self := revision(); info.Version != "" && self != "" && info.Version != self {
 			line += fmt.Sprintf("; runs swarm %s, this binary is %s: update it there", info.Version, self)
@@ -157,6 +161,9 @@ func nodeStatus(out io.Writer, c *config.Config) error {
 		state = "running"
 	}
 	fmt.Fprintf(out, "node %s (profile %s): %s\n", c.Node.Name, c.Profile.Name, state)
+	if b, err := os.ReadFile(node.SyncWarnFile(c.StatePath())); err == nil && dispatch.Running(c.StatePath()) {
+		fmt.Fprintf(out, "  out of step with the coordinator: %s\n", strings.TrimSpace(string(b)))
+	}
 	fmt.Fprintf(out, "  coordinator: %s\n", strings.Join(c.Node.Coordinator, " "))
 	fmt.Fprintf(out, "  repos: %s\n", strings.Join(slices.Sorted(maps.Keys(c.Repos)), ", "))
 	fmt.Fprintf(out, "  tasks live on the coordinator: %s status\n", strings.Join(c.Node.Coordinator, " "))

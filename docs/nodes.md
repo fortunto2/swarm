@@ -144,3 +144,12 @@ A hello carries `board.NodeProtocol`. The coordinator places new work only on a 
 speaks its protocol or a later one; an older node keeps its running attempts and gates, and
 `swarm status` shows it holding with "upgrade this node's swarm". Bump the constant when an
 order gains a field an older node would silently ignore (2: a start's base ref).
+
+## Out of step while the link holds
+
+A node's link is one long-lived connection; keeping in step (publishing its main, fetching
+the coordinator's main and deliveries) opens new ones. Those can fail while the link holds:
+an expired cloud login behind an ssh proxy kills new sessions, not the open one. The node
+then sends what fails in every poll; the coordinator's `swarm status` prints
+`out of step: <repo> <step>: <why>`, and the node's own status prints the same from
+`state/sync-warn`. New tasks would otherwise branch from a main that stopped moving.

@@ -76,6 +76,7 @@ type NodePoll struct {
 	Live    []string `json:"live,omitempty"`
 	Wait    int      `json:"wait,omitempty"`
 	Cool    []Cool   `json:"cool,omitempty"` // its accounts over their limit, read from their limits files there
+	Warn    string   `json:"warn,omitempty"` // what fails to stay in step (publish, fetch), while the link holds
 }
 
 // Cool: an account over its limit until a time, by the node's reading.

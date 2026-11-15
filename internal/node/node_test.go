@@ -2,8 +2,10 @@ package node
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -50,5 +52,32 @@ func TestFetchRefTakesOnlySwarmRefs(t *testing.T) {
 		if err := n.fetchRef(context.Background(), "r", ref); err == nil || !strings.Contains(err.Error(), "not swarm's") {
 			t.Fatalf("fetchRef(%q) = %v, want a refusal", ref, err)
 		}
+	}
+}
+
+// The link can hold while every new connection fails (an expired cloud login behind the ssh
+// proxy, seen live): the node says what is out of step, in its polls and in a state file,
+// and forgets it once the step works again.
+func TestSyncFailuresAreToldAndForgotten(t *testing.T) {
+	state := t.TempDir()
+	n := &Node{Cfg: &config.Config{Profile: config.Profile{StateDir: state}}}
+	n.Cfg.Dir = state
+	sso := "git push --quiet box:app refs/heads/main:refs/heads/main: exit status 128: " +
+		"aws: [ERROR]: Error when retrieving token from sso: Token has expired and refresh failed\n" +
+		"Connection closed by UNKNOWN port 65535\r\nfatal: Could not read from remote repository."
+	n.noteSync("app publish refs/heads/main", errors.New(sso))
+	n.mu.Lock()
+	warn := n.syncWarnLocked()
+	n.mu.Unlock()
+	if !strings.Contains(warn, "app publish refs/heads/main: ") || !strings.Contains(warn, "Token has expired") {
+		t.Fatalf("warn = %q, want the step and the line that says why", warn)
+	}
+	b, err := os.ReadFile(SyncWarnFile(n.Cfg.StatePath()))
+	if err != nil || !strings.Contains(string(b), "Token has expired") {
+		t.Fatalf("state file: %q %v", b, err)
+	}
+	n.noteSync("app publish refs/heads/main", nil)
+	if _, err := os.Stat(SyncWarnFile(n.Cfg.StatePath())); !os.IsNotExist(err) {
+		t.Fatalf("the warning outlived a working step: %v", err)
 	}
 }
