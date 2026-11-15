@@ -22,13 +22,16 @@ func TestParseResultTakesTheLastResult(t *testing.T) {
 }
 
 func TestAllowedToolsNoPush(t *testing.T) {
-	a := Attempt{Gate: []string{"go vet ./...", "go test ./...", "make lint"},
+	a := Attempt{Gate: []string{"go vet ./...", "go test ./...", "make lint", "sh -c 'x'", "cd sub && cargo test", "CGO_ENABLED=0 go build ./..."},
 		ExtraMCP: map[string]config.MCPServer{"solograph": {Command: "x"}}}
 	got := strings.Join(AllowedTools(a, []string{"Bash(npm ci:*)"}), " ")
-	for _, want := range []string{"mcp__board__*", "mcp__solograph__*", "Bash(go:*)", "Bash(make:*)", "Bash(npm ci:*)"} {
+	for _, want := range []string{"mcp__board__*", "mcp__solograph__*", "Bash(go:*)", "Bash(make:*)", "Bash(npm ci:*)", "Bash(swarm gate:*)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %s in %s", want, got)
 		}
+	}
+	if strings.Contains(got, "Bash(sh:*)") || strings.Contains(got, "Bash(cd:*)") || strings.Contains(got, "CGO_ENABLED") {
+		t.Fatalf("a shell, cd or env prefix became a rule: %s", got)
 	}
 	if strings.Contains(got, "push") || strings.Contains(got, "Bash(git:*)") {
 		t.Fatalf("push reachable: %s", got)

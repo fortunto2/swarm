@@ -12,7 +12,7 @@ DDD, schemas, ORM). One commit per step, tests first where a contract exists.
 | 5 | Gate concurrency cap (`limits.max_gates`, default half of max_workers) | 10 suites at once thrash the machine and time out honest work as gate_fail | done |
 | 6 | Worker start off the tick: claim on the loop, worktree + launch in a goroutine, result back to the loop | 10 ready tasks = 10 serial `git worktree add` inside one tick | done |
 | 7 | Board: one handler table in the service; RPC and MCP generated from it | each operation was written three times (service, RPC, MCP) | done |
-| 8 | `swarm gate` for workers (exact same check as the daemon); permission derivation skips shells and env prefixes | `Bash(sh:*)` / `Bash(cd:*)` from gate commands were too wide or useless | |
+| 8 | `swarm gate` for workers (exact same check as the daemon); permission derivation skips shells and env prefixes | `Bash(sh:*)` / `Bash(cd:*)` from gate commands were too wide or useless | done |
 | 9 | Dependencies through the session tool (`needs`), drafts promoted when deps merge; cycles impossible by construction (edges only from a new task to existing ones) | the DAG existed in the schema but nothing could create an edge | done |
 | 10 | `swarm schema` prints the JSON Schema of swarm.toml; test validates the shipped example against it | editor completion and validation; a schema that drifts from the code fails the test | |
 | 11 | sqlc for static queries (typed Go from SQL) | decided at step 11 after 2 removes the stringly part; see outcome | |

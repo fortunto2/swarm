@@ -25,6 +25,11 @@ type Verdict struct {
 	Tail   string // last 4K of the failing output, for the next attempt
 }
 
+// AllowTestsMarker in a task's spec lets it delete or skip tests (a task that rewrites a
+// suite). It lives in the spec, which the worker cannot edit, so a worker cannot grant
+// itself the permission.
+const AllowTestsMarker = "[allow-test-changes]"
+
 const tailBytes = 4096
 
 // Tail keeps the last n bytes of an output, marked when cut.

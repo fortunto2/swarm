@@ -77,6 +77,8 @@ var ops = []op{
 		func(s *Service, ctx context.Context, tok string, in blockedIn) (any, error) {
 			return ok, s.ReportBlocked(ctx, tok, in.Reason, in.Question)
 		}),
+	def("gate_spec", "worker", "The checks your submission will face (gate commands, base, owned files). `swarm gate` runs them for you.",
+		func(s *Service, ctx context.Context, tok string, _ empty) (any, error) { return s.GateSpec(ctx, tok) }),
 	def("swarm_status", "lead", "Tasks per status, attempts running, dollars spent in 24h. Check before adding work.",
 		func(s *Service, ctx context.Context, tok string, _ empty) (any, error) { return s.Status(ctx, tok) }),
 	def("swarm_add_task", "lead", "Queue a task for the swarm. 15-60 min of work; acceptance must be checkable by the repo's gate; files are the paths it may write (no two concurrent tasks share one); needs lists task ids that must merge first. Pass run to group tasks of one change.",

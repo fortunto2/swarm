@@ -133,7 +133,8 @@ func status(t *testing.T, prof string) string {
 const goodWorker = `printf 'package app\n\nfunc Two() int { return 2 }\n' > two.go
 printf 'package app\n\nimport "testing"\n\nfunc TestTwo(t *testing.T) { if Two() != 2 { t.Fatal() } }\n' > two_test.go
 git add -A && git commit -qm "T$SWARM_TASK_ID: add Two" --trailer "Swarm-Task: $SWARM_TASK_ID"
-"$SWARM_BIN" board done "$(git rev-parse HEAD)" "added Two"
+swarm gate
+swarm board done "$(git rev-parse HEAD)" "added Two"
 `
 
 func TestReadyToMerged(t *testing.T) {
@@ -405,5 +406,26 @@ git add -A && git commit -qm "T$SWARM_TASK_ID"
 	if _, err := swarm(t, prof, 30*time.Second, "task", "add", "--repo", "app", "--title", "C",
 		"--spec", "c", "--acceptance", "x", "--needs", "99"); err == nil {
 		t.Fatal("a dependency on a task that does not exist was accepted")
+	}
+}
+
+// swarm gate in a worker refuses what the daemon's gate would refuse: the worker learns
+// before submitting, not after a wasted attempt.
+func TestWorkerGateCatchesWhatTheDaemonWould(t *testing.T) {
+	repo := testbed(t)
+	marks := t.TempDir()
+	worker := fmt.Sprintf(`printf 'package app\n\nimport "testing"\n\nfunc TestOne(t *testing.T) { t.Skip() }\n' > one_test.go
+git add -A && git commit -qm skip
+if swarm gate > %q 2>&1; then echo pass >> %q; fi
+exit 0
+`, filepath.Join(marks, "gate.out"), filepath.Join(marks, "gate.out"))
+	prof := profile(t, repo, worker, 1)
+	addTask(t, prof, "")
+	if out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	got, _ := os.ReadFile(filepath.Join(marks, "gate.out"))
+	if !strings.Contains(string(got), "a test was switched off") || strings.Contains(string(got), "pass\n") {
+		t.Fatalf("swarm gate output:\n%s", got)
 	}
 }

@@ -108,6 +108,7 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	}
 	d.Board.IssueFixed(op, board.Identity{Role: "lead"})
 	d.Board.Locate = d.locate
+	d.Board.Repo = d.repo
 	if err := d.reconcile(ctx); err != nil {
 		return err
 	}

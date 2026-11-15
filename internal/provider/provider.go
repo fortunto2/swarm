@@ -38,6 +38,7 @@ type Attempt struct {
 // its job needs. git push is not in the list on purpose.
 func AllowedTools(a Attempt, extra []string) []string {
 	base := []string{"mcp__board__*", "Read", "Write", "Edit", "Glob", "Grep",
+		"Bash(swarm gate:*)", "Bash(swarm board:*)",
 		"Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(git diff:*)",
 		"Bash(git log:*)", "Bash(git rev-parse:*)", "Bash(git show:*)", "Bash(ls:*)", "Bash(cat:*)"}
 	var derived []string
@@ -46,13 +47,30 @@ func AllowedTools(a Attempt, extra []string) []string {
 	}
 	seen := map[string]bool{}
 	for _, g := range a.Gate {
-		if f := strings.Fields(g); len(f) > 0 && !seen[f[0]] {
-			seen[f[0]] = true
-			derived = append(derived, "Bash("+f[0]+":*)")
+		if prog := program(g); prog != "" && !seen[prog] {
+			seen[prog] = true
+			derived = append(derived, "Bash("+prog+":*)")
 		}
 	}
 	slices.Sort(derived)
 	return append(append(base, derived...), extra...)
+}
+
+// program is the tool a gate command runs, for a permission rule: env assignments are
+// skipped, and a shell, cd or env yields nothing (allowing `sh:*` would allow anything;
+// the worker has `swarm gate` for the exact check instead).
+func program(cmdline string) string {
+	for _, f := range strings.Fields(cmdline) {
+		if strings.Contains(f, "=") && !strings.HasPrefix(f, "=") {
+			continue
+		}
+		switch f {
+		case "sh", "bash", "zsh", "cd", "env", "exec", "sudo", "eval", "xargs":
+			return ""
+		}
+		return f
+	}
+	return ""
 }
 
 type Adapter interface {
@@ -80,6 +98,8 @@ func SwarmEnv(a Attempt) []string {
 		"SWARM_SOCKET=" + a.Socket,
 		"SWARM_TOKEN=" + a.Token,
 		"SWARM_BIN=" + a.SwarmBin,
+		// swarm on PATH, so `swarm gate` matches its permission rule literally
+		"PATH=" + filepath.Dir(a.SwarmBin) + string(os.PathListSeparator) + os.Getenv("PATH"),
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -17,6 +18,7 @@ import (
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/dispatch"
+	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
 )
 
@@ -197,4 +199,50 @@ func boardCmd() *cobra.Command {
 	c.AddCommand(&cobra.Command{Use: "task", Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error { return call("get_task", nil) }})
 	return c
+}
+
+// gateCmd: inside a worker's worktree, the checks its submission will face, run the same
+// way the daemon runs them. Exit 1 on a failure, with the reason and the output tail.
+func gateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "gate",
+		Short: "In a worker's worktree: run the checks the submission will face",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cl, err := board.Dial(os.Getenv("SWARM_SOCKET"))
+			if err != nil {
+				return fmt.Errorf("no board (run this inside a swarm worker): %w", err)
+			}
+			defer cl.Close()
+			raw, err := cl.Do("gate_spec", os.Getenv("SWARM_TOKEN"), nil)
+			if err != nil {
+				return err
+			}
+			var spec board.GateSpec
+			if err := json.Unmarshal(raw, &spec); err != nil {
+				return err
+			}
+			dir, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+			if head, err := gitx.Head(ctx, dir, "HEAD"); err == nil && head != spec.Base {
+				if v := gate.Static(ctx, dir, spec.Base, head, spec.Files, spec.AllowTests); !v.OK {
+					fmt.Fprintf(out, "gate: FAIL (%s) %s\n%s\n", v.Stage, v.Reason, v.Tail)
+					return errors.New("static checks failed")
+				}
+			} else {
+				fmt.Fprintln(out, "gate: nothing committed yet; static checks run on your commits")
+			}
+			v := gate.Run(ctx, dir, spec.Commands, time.Duration(spec.TimeoutSec)*time.Second)
+			if !v.OK {
+				fmt.Fprintf(out, "gate: FAIL %s\n%s\n", v.Reason, v.Tail)
+				return errors.New("gate failed")
+			}
+			fmt.Fprintln(out, "gate: pass")
+			return nil
+		},
+	}
 }

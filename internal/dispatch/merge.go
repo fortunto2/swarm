@@ -14,10 +14,6 @@ import (
 	"github.com/fortunto2/swarm/internal/worktree"
 )
 
-// The spec may allow touching tests (a task that rewrites a test suite). Explicit marker,
-// so a worker cannot grant itself the permission.
-const allowTestsMarker = "[allow-test-changes]"
-
 // startGates launches the gate for every verifying task not already being checked. Gates
 // run off the tick so a 15-minute suite does not freeze scheduling.
 func (d *Daemon) startGates(ctx context.Context) error {
@@ -43,7 +39,7 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		claims, _ := d.DB.WriteClaims(ctx, t.ID)
 		d.gating[t.ID] = true
 		id, commit := t.ID, t.ResultCommit.String
-		allow := strings.Contains(t.Spec, allowTestsMarker)
+		allow := strings.Contains(t.Spec, gate.AllowTestsMarker)
 		dir := filepath.Join(d.Cfg.StatePath(), "gates", fmt.Sprintf("T%d-%.12s", id, commit))
 		go func() {
 			v := gate.Static(ctx, r.Path, base, commit, claims, allow)

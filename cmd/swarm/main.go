@@ -98,7 +98,7 @@ func main() {
 		},
 	})
 
-	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd())
+	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "swarm:", err)

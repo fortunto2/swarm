@@ -12,7 +12,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
+	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
@@ -41,6 +43,8 @@ type Service struct {
 	BaseFor func(repo string) (string, error)
 	// Locate gives a task's worktree and branch (derived, never stored).
 	Locate func(t db.Task) worktree.WT
+	// Repo gives a profile repo's settings (the gate a worker runs on itself).
+	Repo func(name string) (config.Repo, error)
 
 	mu     sync.Mutex
 	tokens map[string]Identity
@@ -222,4 +226,36 @@ func AsError(err error) *Error {
 		return be
 	}
 	return &Error{"internal", err.Error()}
+}
+
+// GateSpec is what `swarm gate` needs to run, in a worker's worktree, the same checks the
+// daemon will run on its submission.
+type GateSpec struct {
+	Commands   []string `json:"commands"`
+	TimeoutSec int      `json:"timeout_sec"`
+	Base       string   `json:"base"`
+	Files      []string `json:"files_write"`
+	AllowTests bool     `json:"allow_test_changes"`
+}
+
+func (s *Service) GateSpec(ctx context.Context, tok string) (GateSpec, error) {
+	id, err := s.who(tok)
+	if err != nil {
+		return GateSpec{}, err
+	}
+	t, err := s.DB.GetTask(ctx, id.TaskID)
+	if err != nil {
+		return GateSpec{}, err
+	}
+	r, err := s.Repo(t.Repo)
+	if err != nil {
+		return GateSpec{}, err
+	}
+	base, err := s.DB.RunBase(ctx, t.RunID)
+	if err != nil {
+		return GateSpec{}, err
+	}
+	files, _ := s.DB.WriteClaims(ctx, t.ID)
+	return GateSpec{Commands: r.Gate, TimeoutSec: int(r.GateTimeout.Seconds()), Base: base, Files: files,
+		AllowTests: strings.Contains(t.Spec, gate.AllowTestsMarker)}, nil
 }
