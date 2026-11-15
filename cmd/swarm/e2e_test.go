@@ -1185,3 +1185,22 @@ func (l *lockedBuffer) String() string {
 	defer l.mu.Unlock()
 	return l.b.String()
 }
+
+// A local main behind its upstream would hand every worker an old base (swarm never fetches):
+// check says so and names the ref to use instead.
+func TestCheckWarnsWhenMainIsBehindItsUpstream(t *testing.T) {
+	repo := testbed(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	other := filepath.Join(t.TempDir(), "other")
+	sh(t, repo, "git clone -q --bare . "+origin+" && git remote add origin "+origin+" && git fetch -q origin && git branch -q -u origin/main main")
+	prof := profile(t, repo, goodWorker, 2)
+	if out, _ := swarm(t, prof, 30*time.Second, "check"); strings.Contains(out, "warn:") {
+		t.Fatalf("warned while main is current:\n%s", out)
+	}
+	sh(t, filepath.Dir(other), "git clone -q "+origin+" other && cd other && git commit -q --allow-empty -m ahead && git push -q origin main")
+	sh(t, repo, "git fetch -q origin")
+	out, err := swarm(t, prof, 30*time.Second, "check")
+	if err != nil || !strings.Contains(out, "main is 1 commit(s) behind origin/main") || !strings.Contains(out, `refs/remotes/origin/main`) {
+		t.Fatalf("no warning for a main behind origin/main: %v\n%s", err, out)
+	}
+}

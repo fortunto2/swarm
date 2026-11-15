@@ -17,6 +17,7 @@ import (
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/dispatch"
+	"github.com/fortunto2/swarm/internal/gitx"
 )
 
 var profileFlag string
@@ -48,6 +49,11 @@ func main() {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "ok: profile %s, %d repo(s), %d provider(s), %d node(s), db %s\n",
 				c.Profile.Name, len(c.Repos), len(c.Providers), len(c.Nodes), c.DBPath())
+			for _, name := range slices.Sorted(maps.Keys(c.Repos)) {
+				if w := staleMain(name, c.Repos[name]); w != "" {
+					fmt.Fprintln(cmd.OutOrStdout(), w)
+				}
+			}
 			return nil
 		},
 	})
@@ -175,3 +181,24 @@ func main() {
 
 // errReported: the command already printed why it failed; exit 1 without saying it twice.
 var errReported = errors.New("failure reported")
+
+// staleMain: a warning when a repo's main_branch is a local branch behind its upstream. swarm
+// never fetches and branches every task from what main_branch names, so a checkout nobody
+// pulls (people work in other worktrees) hands every worker an old base.
+func staleMain(name string, r config.Repo) string {
+	if strings.HasPrefix(r.MainBranch, "refs/") {
+		return ""
+	}
+	ctx := context.Background()
+	path := config.Expand(r.Path)
+	up, err := gitx.Run(ctx, path, "rev-parse", "--abbrev-ref", r.MainBranch+"@{upstream}")
+	if err != nil || up == "" {
+		return "" // no upstream: local main is the truth
+	}
+	n, err := gitx.Run(ctx, path, "rev-list", "--count", r.MainBranch+".."+up)
+	if err != nil || n == "0" {
+		return ""
+	}
+	return fmt.Sprintf("warn: repos.%s: %s is %s commit(s) behind %s, and every task branches from it (swarm never fetches). "+
+		"Use main_branch = \"refs/remotes/%s\" with merge = \"branch\", or keep %s pulled.", name, r.MainBranch, n, up, up, r.MainBranch)
+}
