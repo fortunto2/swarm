@@ -84,7 +84,13 @@ type Provider struct {
 	Roles        []string `toml:"roles" json:"roles,omitempty"`
 	Priority     int      `toml:"priority" json:"priority,omitempty"`
 	BudgetUSDDay float64  `toml:"budget_usd_day" json:"budget_usd_day,omitempty"`
-	Command      []string `toml:"command" json:"command,omitempty"` // kind=mock only: argv of the fake worker
+	// LimitsFile: a rate-limit reading in Claude Code's status-line shape
+	// ({"limits": {"five_hour": {"used_percentage", "resets_at"}, "seven_day": {...}}}), written by
+	// whatever watches this account. At PauseAbove percent (default 80) in any window the
+	// provider cools until that window resets: the swarm leaves the rest for work that must run.
+	LimitsFile string   `toml:"limits_file" json:"limits_file,omitempty"`
+	PauseAbove float64  `toml:"pause_above" json:"pause_above,omitempty"`
+	Command    []string `toml:"command" json:"command,omitempty"` // kind=mock only: argv of the fake worker
 	// kind=claude: which settings load (user,project,local). Empty = the CLI's default, all
 	// of them: the operator's hooks and skills help workers too.
 	SettingSources string `toml:"setting_sources" json:"setting_sources,omitempty"`
@@ -394,7 +400,10 @@ func (c *Config) resolvePaths() {
 		c.Repos[n] = r
 	}
 	for n, p := range c.Providers {
-		p.ConfigDir, p.Home = Expand(p.ConfigDir), Expand(p.Home)
+		p.ConfigDir, p.Home, p.LimitsFile = Expand(p.ConfigDir), Expand(p.Home), Expand(p.LimitsFile)
+		if p.PauseAbove == 0 {
+			p.PauseAbove = 80
+		}
 		c.Providers[n] = p
 	}
 	for n, m := range c.MCP {

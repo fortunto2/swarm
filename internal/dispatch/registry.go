@@ -2,8 +2,10 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"sort"
 	"time"
@@ -47,6 +49,15 @@ func (d *Daemon) refreshRegistry(ctx context.Context) error {
 	}
 	for id, p := range d.Cfg.Providers {
 		st := states[id]
+		if until, why := limitsReading(p, now); until > 0 && st.State != "cooling" && st.State != "disabled" {
+			if err := d.DB.CoolProvider(ctx, id, until, why); err != nil {
+				return err
+			}
+			states[id] = db.ProviderState{State: "cooling", CoolingUntil: until, LastError: why}
+			d.DB.Event(ctx, "swarmd", 0, "provider_cooling", map[string]string{"provider": id, "why": why})
+			d.Log.Info("provider cooling", "provider", id, "why", why)
+			continue
+		}
 		if p.BudgetUSDDay > 0 && spent[id] >= p.BudgetUSDDay && st.State != "cooling" && st.State != "disabled" {
 			why := fmt.Sprintf("daily budget spent: $%.2f of $%.2f", spent[id], p.BudgetUSDDay)
 			if err := d.DB.CoolProvider(ctx, id, nextDay.Unix(), why); err != nil {
@@ -154,4 +165,38 @@ func ProviderViews(ctx context.Context, cfg *config.Config, d *db.DB) ([]Provide
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// limitsReading: (reset time, why) when the provider's limits file shows a window at or over
+// its threshold and not yet reset; (0, "") otherwise, including when there is no readable file
+// or the reading is a day old (an unknown is not a reason to stop work).
+func limitsReading(p config.Provider, now time.Time) (int64, string) {
+	if p.LimitsFile == "" {
+		return 0, ""
+	}
+	b, err := os.ReadFile(p.LimitsFile)
+	if err != nil {
+		return 0, ""
+	}
+	var r struct {
+		At     int64 `json:"at"`
+		Limits map[string]struct {
+			Used   *float64 `json:"used_percentage"`
+			Resets int64    `json:"resets_at"`
+		} `json:"limits"`
+	}
+	if json.Unmarshal(b, &r) != nil || (r.At > 0 && now.Unix()-r.At > 86400) {
+		return 0, ""
+	}
+	var until int64
+	why := ""
+	for win, w := range r.Limits {
+		if w.Used == nil || w.Resets <= now.Unix() || *w.Used < p.PauseAbove {
+			continue
+		}
+		if w.Resets > until {
+			until, why = w.Resets, fmt.Sprintf("%s at %.0f%% (pause_above %.0f%%)", win, *w.Used, p.PauseAbove)
+		}
+	}
+	return until, why
 }

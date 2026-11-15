@@ -181,6 +181,12 @@
           "budget_usd_day": {
             "type": "number"
           },
+          "limits_file": {
+            "type": "string"
+          },
+          "pause_above": {
+            "type": "number"
+          },
           "command": {
             "type": [
               "null",

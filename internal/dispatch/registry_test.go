@@ -1,6 +1,9 @@
 package dispatch
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -65,5 +68,31 @@ func TestParseEtime(t *testing.T) {
 	}
 	if _, ok := parseEtime("garbage"); ok {
 		t.Error("garbage parsed")
+	}
+}
+
+func TestLimitsReadingPausesAProvider(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	f := filepath.Join(t.TempDir(), "limits.json")
+	write := func(at int64, used float64, resets int64) {
+		_ = os.WriteFile(f, []byte(fmt.Sprintf(`{"at":%d,"limits":{"five_hour":{"used_percentage":%v,"resets_at":%d},"seven_day":{"used_percentage":10,"resets_at":%d}}}`,
+			at, used, resets, now.Add(48*time.Hour).Unix())), 0o600)
+	}
+	p := config.Provider{LimitsFile: f, PauseAbove: 80}
+	write(now.Unix(), 85, now.Add(time.Hour).Unix())
+	if until, why := limitsReading(p, now); until != now.Add(time.Hour).Unix() || why == "" {
+		t.Fatalf("85%% must pause until the reset: %d %q", until, why)
+	}
+	write(now.Unix(), 50, now.Add(time.Hour).Unix())
+	if until, _ := limitsReading(p, now); until != 0 {
+		t.Fatal("50% must not pause")
+	}
+	write(now.Add(-48*time.Hour).Unix(), 99, now.Add(time.Hour).Unix())
+	if until, _ := limitsReading(p, now); until != 0 {
+		t.Fatal("a reading two days old is unknown, not a reason to stop")
+	}
+	write(now.Unix(), 99, now.Add(-time.Minute).Unix())
+	if until, _ := limitsReading(p, now); until != 0 {
+		t.Fatal("a window already reset does not pause")
 	}
 }
