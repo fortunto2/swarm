@@ -32,7 +32,7 @@ func (d *Daemon) startGates(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		base, err := d.DB.RunBase(ctx, t.RunID)
+		base, err := d.DB.TaskBase(ctx, t)
 		if err != nil {
 			return err
 		}
@@ -178,7 +178,8 @@ func (d *Daemon) rebase(ctx context.Context, t db.Task, wt worktree.WT, main str
 	if err != nil {
 		return err
 	}
-	if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Verifying, db.Patch{ResultCommit: &head}); err != nil {
+	// the task's base moves with it: its diff is now measured from the main it sits on
+	if err := d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Merging}, db.Verifying, db.Patch{ResultCommit: &head, Base: &main}); err != nil {
 		return err
 	}
 	d.DB.Event(ctx, "swarmd", t.ID, "rebased", map[string]string{"main": main, "commit": head})

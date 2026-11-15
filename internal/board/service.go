@@ -166,12 +166,12 @@ func (s *Service) ReportDone(ctx context.Context, tok, commit, summary string) e
 	if !gitx.IsAncestor(ctx, wt, sha, "refs/heads/"+loc.Branch) {
 		return &Error{"wrong_branch", "commit is not on " + loc.Branch + "; commit to your own branch"}
 	}
-	base, err := s.DB.RunBase(ctx, t.RunID)
+	base, err := s.DB.TaskBase(ctx, t)
 	if err != nil {
 		return err
 	}
 	if sha == base || gitx.IsAncestor(ctx, wt, sha, base) {
-		return &Error{"no_change", "the commit adds nothing over the run's base"}
+		return &Error{"no_change", "the commit adds nothing over your branch's base"}
 	}
 	if err := s.DB.Move(ctx, id.Actor(), t.ID, []db.Status{db.Running}, db.Verifying, db.Patch{ResultCommit: &sha, ClearLease: true}); err != nil {
 		if errors.Is(err, db.ErrStale) {
@@ -251,7 +251,7 @@ func (s *Service) GateSpec(ctx context.Context, tok string) (GateSpec, error) {
 	if err != nil {
 		return GateSpec{}, err
 	}
-	base, err := s.DB.RunBase(ctx, t.RunID)
+	base, err := s.DB.TaskBase(ctx, t)
 	if err != nil {
 		return GateSpec{}, err
 	}

@@ -23,6 +23,10 @@ var schema string
 // versioning adopt it). A later change is a new step, never an edit of an old one.
 var migrations = []string{
 	schema,
+	// 1: each task has its own base, the main it was branched from or last rebased onto.
+	// The run's base is wrong for a task that starts after others merged: its worktree would
+	// miss their code, and its diff would claim their files as its own.
+	`ALTER TABLE tasks ADD COLUMN base_commit TEXT;`,
 }
 
 type DB struct{ *sql.DB }

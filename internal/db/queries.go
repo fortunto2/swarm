@@ -17,19 +17,20 @@ type Task struct {
 	Priority                int
 	Provider, Model, Worker sql.NullString
 	Node, ResultCommit      sql.NullString
+	Base                    sql.NullString // the main this task's branch starts from
 	Attempts, InfraFailures int
 	LeaseUntil, NotBefore   sql.NullInt64
 }
 
 const taskCols = `id, run_id, parent_id, repo, title, spec, acceptance, tier, status, priority,
 	provider, model, worker_id, node, result_commit, attempts, infra_failures,
-	lease_until, not_before`
+	lease_until, not_before, base_commit`
 
 func scanTask(r interface{ Scan(...any) error }) (Task, error) {
 	var t Task
 	err := r.Scan(&t.ID, &t.RunID, &t.ParentID, &t.Repo, &t.Title, &t.Spec, &t.Acceptance, &t.Tier,
 		&t.Status, &t.Priority, &t.Provider, &t.Model, &t.Worker, &t.Node,
-		&t.ResultCommit, &t.Attempts, &t.InfraFailures, &t.LeaseUntil, &t.NotBefore)
+		&t.ResultCommit, &t.Attempts, &t.InfraFailures, &t.LeaseUntil, &t.NotBefore, &t.Base)
 	return t, err
 }
 
@@ -188,6 +189,21 @@ func (d *DB) StartAttempt(ctx context.Context, taskID int64, provider, model, no
 func (d *DB) EndAttempt(ctx context.Context, taskID int64, outcome string) {
 	_, _ = d.ExecContext(ctx, `UPDATE attempts SET ended_at=unixepoch(), outcome=? WHERE id=(
 		SELECT id FROM attempts WHERE task_id=? AND outcome IS NULL ORDER BY id DESC LIMIT 1)`, outcome, taskID)
+}
+
+// TaskBase: the commit a task's changes are measured from. Its own base once it has a
+// worktree; before that (or in a database from before migration 1), the run's.
+func (d *DB) TaskBase(ctx context.Context, t Task) (string, error) {
+	if t.Base.Valid && t.Base.String != "" {
+		return t.Base.String, nil
+	}
+	return d.RunBase(ctx, t.RunID)
+}
+
+// SetBase records where a task's new worktree was branched from (no status change).
+func (d *DB) SetBase(ctx context.Context, id int64, base string) error {
+	_, err := d.ExecContext(ctx, `UPDATE tasks SET base_commit=? WHERE id=?`, base, id)
+	return err
 }
 
 func (d *DB) RunBase(ctx context.Context, runID int64) (string, error) {

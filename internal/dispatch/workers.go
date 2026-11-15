@@ -16,6 +16,7 @@ import (
 	"github.com/fortunto2/swarm/internal/board"
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
+	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/prompts"
 	"github.com/fortunto2/swarm/internal/provider"
 	"github.com/fortunto2/swarm/internal/worktree"
@@ -106,13 +107,20 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, pid, model, worker stri
 	if err != nil {
 		return fail(err)
 	}
-	base, err := d.DB.RunBase(ctx, t.RunID)
+	// A new worktree starts from main as it is now, so a task sees everything merged before
+	// it (its dependencies first of all), and its diff is measured from there.
+	base, err := gitx.Head(ctx, r.Path, "refs/heads/"+r.MainBranch)
 	if err != nil {
 		return fail(err)
 	}
-	wt, err := worktree.Ensure(ctx, r.Path, d.Cfg.Profile.WorktreeRoot, t.Repo, t.ID, base)
+	wt, created, err := worktree.Ensure(ctx, r.Path, d.Cfg.Profile.WorktreeRoot, t.Repo, t.ID, base)
 	if err != nil {
 		return fail(fmt.Errorf("worktree: %w", err))
+	}
+	if created {
+		if err := d.DB.SetBase(ctx, t.ID, base); err != nil {
+			return fail(err)
+		}
 	}
 	dir := filepath.Join(d.Cfg.StatePath(), "attempts", worker)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

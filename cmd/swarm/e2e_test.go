@@ -429,3 +429,27 @@ exit 0
 		t.Fatalf("swarm gate output:\n%s", got)
 	}
 }
+
+// Two independent tasks of one run, each claiming its own file. The second is rebased after
+// the first merges; its re-gate must not see the first one's file as its own change.
+func TestClaimsHoldAfterRebase(t *testing.T) {
+	repo := testbed(t)
+	worker := `f="t$SWARM_TASK_ID.go"
+printf 'package app\n\nfunc T%s() int { return %s }\n' "$SWARM_TASK_ID" "$SWARM_TASK_ID" > "$f"
+git add -A && git commit -qm "T$SWARM_TASK_ID"
+swarm board done "$(git rev-parse HEAD)"
+`
+	prof := profile(t, repo, worker, 2)
+	for _, a := range [][]string{
+		{"task", "add", "--repo", "app", "--title", "A", "--spec", "a", "--acceptance", "x", "--files", "t1.go"},
+		{"task", "add", "--repo", "app", "--run", "1", "--title", "B", "--spec", "b", "--acceptance", "x", "--files", "t2.go"},
+	} {
+		if out, err := swarm(t, prof, 30*time.Second, a...); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	}
+	out, _ := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle")
+	if st := status(t, prof); !strings.Contains(st, "merged       2") {
+		t.Fatalf("want both merged:\n%s\n%s", st, out)
+	}
+}

@@ -63,7 +63,7 @@ var ErrTaken = ErrStale
 // Patch: the fields a transition may set alongside the status. Nil means unchanged.
 type Patch struct {
 	Provider, Model, Worker, Node *string
-	ResultCommit                  *string
+	ResultCommit, Base            *string
 	LeaseUntil                    *int64
 	ClearLease                    bool
 	Attempts, InfraFailures       *int
@@ -77,7 +77,7 @@ func (p Patch) sets() ([]string, []any) {
 	for _, f := range []struct {
 		col string
 		v   *string
-	}{{"provider", p.Provider}, {"model", p.Model}, {"worker_id", p.Worker}, {"node", p.Node}, {"result_commit", p.ResultCommit}} {
+	}{{"provider", p.Provider}, {"model", p.Model}, {"worker_id", p.Worker}, {"node", p.Node}, {"result_commit", p.ResultCommit}, {"base_commit", p.Base}} {
 		if f.v != nil {
 			add(f.col, *f.v)
 		}
