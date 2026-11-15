@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
+	"github.com/fortunto2/swarm/internal/taskbase"
 )
 
 func TestWorkerTokenCannotUseSessionTools(t *testing.T) {
@@ -191,5 +194,36 @@ func TestRetryNoteReachesTheNextAttempt(t *testing.T) {
 	}
 	if notes, _ := d.Notes(ctx, id, "review", 4); len(notes) != 1 {
 		t.Fatalf("a blank note was stored: %+v", notes)
+	}
+}
+
+// A cancelled task's joined base (refs/swarm/base/T<id>-<sha>) is never fetched again: the
+// ref goes with it, as it does on merge.
+func TestCancelForgetsTheTasksBaseRefs(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	repo := t.TempDir()
+	for _, a := range [][]string{{"init", "-q", "-b", "main"}, {"-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "--allow-empty", "-m", "base"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, a...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", a, err, out)
+		}
+	}
+	s := &Service{DB: d, Repo: func(string) (config.Repo, error) { return config.Repo{Path: repo, MainBranch: "main"}, nil }}
+	lead := s.Issue(Identity{Role: "lead"})
+	run, _ := d.CreateRun(ctx, "x", "", "base")
+	id, _ := d.AddTask(ctx, db.NewTask{RunID: run, Repo: "app", Title: "T", Spec: "s", Acceptance: "a", Tier: "B", Files: []string{"a.go"}})
+	ref := taskbase.Ref(id, "0123456789abcdef")
+	if out, err := exec.Command("git", "-C", repo, "update-ref", ref, "main").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if _, err := s.CancelTask(ctx, lead, id); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := exec.Command("git", "-C", repo, "for-each-ref", "refs/swarm/base/").Output(); len(out) != 0 {
+		t.Fatalf("base ref left after cancel: %s", out)
 	}
 }

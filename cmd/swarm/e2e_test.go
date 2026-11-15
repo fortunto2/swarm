@@ -461,6 +461,33 @@ exit 0
 	}
 }
 
+// swarm gate --static, for a worker whose suite runs on another machine: the file and test
+// checks run, the suite does not. A failing test passes --static and fails the full gate.
+func TestWorkerGateStaticSkipsTheSuite(t *testing.T) {
+	repo := testbed(t)
+	marks := t.TempDir()
+	static, full := filepath.Join(marks, "static.out"), filepath.Join(marks, "full.out")
+	worker := fmt.Sprintf(`printf 'package app\n\nimport "testing"\n\nfunc TestRed(t *testing.T) { t.Fatal("red") }\n' > red_test.go
+git add -A && git commit -qm red
+swarm gate --static > %q 2>&1 && echo exit0 >> %q
+swarm gate > %q 2>&1 || echo exit1 >> %q
+exit 0
+`, static, static, full, full)
+	prof := profile(t, repo, worker, 1)
+	addTask(t, prof, "")
+	if out, err := swarm(t, prof, time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	s, _ := os.ReadFile(static)
+	f, _ := os.ReadFile(full)
+	if !strings.Contains(string(s), "static checks pass") || !strings.Contains(string(s), "exit0") {
+		t.Fatalf("swarm gate --static output:\n%s", s)
+	}
+	if !strings.Contains(string(f), "gate: FAIL") || !strings.Contains(string(f), "exit1") {
+		t.Fatalf("swarm gate output:\n%s", f)
+	}
+}
+
 // Two independent tasks of one run, each claiming its own file. The second is rebased after
 // the first merges; its re-gate must not see the first one's file as its own change.
 func TestClaimsHoldAfterRebase(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/fortunto2/swarm/internal/db"
+	"github.com/fortunto2/swarm/internal/taskbase"
 )
 
 // The session side of the board: any Claude Code session, its subagents and its agent-team
@@ -202,6 +203,11 @@ func (s *Service) CancelTask(ctx context.Context, tok string, task int64) (any, 
 	from := []db.Status{db.Draft, db.Ready, db.Running, db.Verifying, db.Review, db.Blocked, db.NeedsHuman}
 	if err := s.DB.Move(ctx, id.Actor(), task, from, db.Cancelled, db.Patch{ClearLease: true}); err != nil {
 		return nil, &Error{"not_cancellable", "the task is merging or already settled; check again in a moment"}
+	}
+	if t, err := s.DB.GetTask(ctx, task); err == nil && s.Repo != nil {
+		if r, err := s.Repo(t.Repo); err == nil {
+			taskbase.Forget(ctx, r.Path, task) // nothing will fetch its joined base again
+		}
 	}
 	s.signal(task)
 	return map[string]any{"task": task, "status": "cancelled"}, nil
