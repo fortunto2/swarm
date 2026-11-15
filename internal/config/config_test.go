@@ -81,6 +81,7 @@ func TestRejects(t *testing.T) {
 		"unknown kind":     {`kind = "claude"`, `kind = "opencode"`, "kind"},
 		"unknown account":  {`accounts = ["claude-a"]`, `accounts = ["nope"]`, "not a provider"},
 		"unknown key":      {`slots = 2`, "slots = 2\nslot = 3", "unknown keys"},
+		"branch on worker": {`merge = "ff"`, "merge = \"branch\"\nbranch_prefix = \"swarm/\"", "the worker's own worktree"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

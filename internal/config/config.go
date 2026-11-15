@@ -286,6 +286,10 @@ func (c *Config) Validate() error {
 		if !slices.Contains(merges, r.Merge) {
 			bad("repos.%s.merge = %q, want one of %v", n, r.Merge, merges)
 		}
+		if r.Merge == "branch" && r.BranchPrefix+"T1" == WorkerBranch(1) {
+			bad("repos.%s.branch_prefix = %q delivers T<n> to %s, the branch the worker's own worktree holds: git refuses to move it (use the default %q)",
+				n, r.BranchPrefix, WorkerBranch(1)[:len(WorkerBranch(1))-1]+"<n>", "swarm/done/")
+		}
 		wt, _ := filepath.Abs(Expand(c.Profile.WorktreeRoot))
 		rp, _ := filepath.Abs(Expand(r.Path))
 		if r.Path != "" && c.Profile.WorktreeRoot != "" && (wt == rp || strings.HasPrefix(wt, rp+string(filepath.Separator))) {
@@ -493,3 +497,7 @@ func (r Repo) MainRef() string {
 	}
 	return "refs/heads/" + r.MainBranch
 }
+
+// WorkerBranch: the branch a task's worktree is checked out on. A delivery branch
+// (merge = "branch") must never be the same name.
+func WorkerBranch(taskID int64) string { return fmt.Sprintf("swarm/T%d", taskID) }
