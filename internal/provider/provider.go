@@ -32,6 +32,7 @@ type Attempt struct {
 	SwarmBin string
 	ExtraMCP map[string]config.MCPServer
 	Gate     []string // the repo's gate commands; their programs are allowed to run
+	Slot     int      // the worker's slot: its port range and anything else that must not collide
 }
 
 // AllowedTools: with no sandbox and nobody to answer a prompt, a worker may run only what
@@ -98,6 +99,9 @@ func SwarmEnv(a Attempt) []string {
 		"SWARM_SOCKET=" + a.Socket,
 		"SWARM_TOKEN=" + a.Token,
 		"SWARM_BIN=" + a.SwarmBin,
+		"SWARM_SLOT=" + strconv.Itoa(a.Slot),
+		"PORT=" + strconv.Itoa(20000+a.Slot*10), // 10 ports per slot: PORT..PORT+9
+		"DISABLE_AUTOUPDATER=1",                 // a CLI that updates itself mid-run changes its flags and JSON
 		// swarm on PATH, so `swarm gate` matches its permission rule literally
 		"PATH=" + filepath.Dir(a.SwarmBin) + string(os.PathListSeparator) + os.Getenv("PATH"),
 	}

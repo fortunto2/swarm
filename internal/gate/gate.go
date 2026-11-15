@@ -89,6 +89,15 @@ func Static(ctx context.Context, wt, base, commit string, claims []string, allow
 	return Verdict{OK: true, Stage: "static"}
 }
 
+// Overlap: two claims can touch the same file. A claim is a path, a glob, or a directory
+// prefix ending in "/".
+func Overlap(a, b string) bool {
+	if a == b || owns(a, b) || owns(b, a) {
+		return true
+	}
+	return strings.HasSuffix(a, "/") && strings.HasSuffix(b, "/") && (strings.HasPrefix(a, b) || strings.HasPrefix(b, a))
+}
+
 // owns: a claim is a file path or a directory prefix ending in "/".
 func owns(claim, file string) bool {
 	if strings.HasSuffix(claim, "/") {

@@ -303,3 +303,24 @@ func (d *DB) SpentSince(ctx context.Context, seconds int64) (float64, error) {
 	err := d.QueryRowContext(ctx, `SELECT coalesce(sum(cost_usd),0) FROM attempts WHERE started_at > unixepoch()-?`, seconds).Scan(&v)
 	return v, err
 }
+
+// ClaimsInFlight: write claims of tasks a worker holds or the gate and merge queue are
+// handling, keyed by task. Two tasks whose claims overlap must not be in flight together.
+func (d *DB) ClaimsInFlight(ctx context.Context) (map[int64][]string, error) {
+	rows, err := d.QueryContext(ctx, `SELECT c.task_id, c.path FROM file_claims c JOIN tasks t ON t.id=c.task_id
+		WHERE c.mode='write' AND t.status IN ('running','verifying','review','merging')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]string{}
+	for rows.Next() {
+		var id int64
+		var p string
+		if err := rows.Scan(&id, &p); err != nil {
+			return nil, err
+		}
+		out[id] = append(out[id], p)
+	}
+	return out, rows.Err()
+}

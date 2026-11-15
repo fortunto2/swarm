@@ -16,6 +16,7 @@ import (
 	"github.com/fortunto2/swarm/internal/board"
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
+	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/prompts"
 	"github.com/fortunto2/swarm/internal/provider"
@@ -53,6 +54,10 @@ func (d *Daemon) maxWorkers() int {
 
 func (d *Daemon) schedule(ctx context.Context) error {
 	ready, err := d.DB.TasksIn(ctx, db.Ready)
+	if err != nil || len(ready) == 0 {
+		return err
+	}
+	inFlight, err := d.DB.ClaimsInFlight(ctx)
 	if err != nil {
 		return err
 	}
@@ -60,8 +65,8 @@ func (d *Daemon) schedule(ctx context.Context) error {
 	for _, p := range d.procs {
 		busy[p.provider]++
 	}
-	for _, pid := range d.starting {
-		busy[pid]++
+	for _, st := range d.starting {
+		busy[st.provider]++
 	}
 	now := time.Now().Unix()
 	for _, t := range ready {
@@ -70,6 +75,13 @@ func (d *Daemon) schedule(ctx context.Context) error {
 		}
 		if t.NotBefore.Valid && t.NotBefore.Int64 > now {
 			continue
+		}
+		claims, err := d.DB.WriteClaims(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		if blocker := overlapping(claims, inFlight); blocker != 0 {
+			continue // waits for T<blocker> to merge or fail: same files, PRD §7
 		}
 		pid, ok := d.pickProvider(t.Tier, busy)
 		if !ok {
@@ -85,8 +97,10 @@ func (d *Daemon) schedule(ctx context.Context) error {
 			return err
 		}
 		busy[pid]++
-		d.starting[t.ID] = pid
-		go func() { d.started <- d.prepare(ctx, t, pid, model, worker) }()
+		inFlight[t.ID] = claims
+		slot := d.freeSlot()
+		d.starting[t.ID] = starting{provider: pid, slot: slot}
+		go func() { d.started <- d.prepare(ctx, t, pid, model, worker, slot) }()
 	}
 	return nil
 }
@@ -101,7 +115,7 @@ type started struct {
 
 // prepare does the slow part of a start off the loop: the worktree (a checkout of the whole
 // repo), the prompt, the process. Only applyStart touches the daemon's maps.
-func (d *Daemon) prepare(ctx context.Context, t db.Task, pid, model, worker string) started {
+func (d *Daemon) prepare(ctx context.Context, t db.Task, pid, model, worker string, slot int) started {
 	fail := func(err error) started { return started{taskID: t.ID, err: err} }
 	r, err := d.repo(t.Repo)
 	if err != nil {
@@ -126,14 +140,14 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, pid, model, worker stri
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fail(err)
 	}
-	prompt, err := d.prompt(ctx, t, r)
+	prompt, err := d.prompt(ctx, t, r, pid+"/"+model)
 	if err != nil {
 		return fail(err)
 	}
 	_ = os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o600)
 	tok := d.Board.Issue(board.Identity{TaskID: t.ID, Role: "worker"})
 	a := provider.Attempt{TaskID: t.ID, Worktree: wt.Path, Dir: dir, Prompt: prompt,
-		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate}
+		Model: model, Socket: d.Socket, Token: tok, SwarmBin: d.SwarmBin, ExtraMCP: d.Cfg.MCPFor("worker"), Gate: r.Gate, Slot: slot}
 	cmd, err := d.adapters[pid].Command(ctx, a)
 	if err != nil {
 		d.Board.Revoke(tok)
@@ -146,12 +160,12 @@ func (d *Daemon) prepare(ctx context.Context, t db.Task, pid, model, worker stri
 		return fail(err)
 	}
 	now := time.Now()
-	return started{taskID: t.ID, model: model, p: &proc{cmd: cmd, token: tok, provider: pid, done: done, log: logPath,
+	return started{taskID: t.ID, model: model, p: &proc{cmd: cmd, token: tok, provider: pid, slot: slot, done: done, log: logPath,
 		leaseUntil: now.Add(lease), deadline: now.Add(d.Cfg.Limits.TaskWallClock.Duration)}}
 }
 
 func (d *Daemon) applyStart(ctx context.Context, s started) {
-	pid := d.starting[s.taskID]
+	pid := d.starting[s.taskID].provider
 	delete(d.starting, s.taskID)
 	if s.err != nil {
 		d.Log.Error("start failed", "task", s.taskID, "err", s.err)
@@ -189,7 +203,7 @@ func (d *Daemon) launch(cmd *exec.Cmd, logPath, worker string) (chan error, erro
 	return done, nil
 }
 
-func (d *Daemon) prompt(ctx context.Context, t db.Task, r config.Repo) (string, error) {
+func (d *Daemon) prompt(ctx context.Context, t db.Task, r config.Repo, provider string) (string, error) {
 	files, _ := d.DB.WriteClaims(ctx, t.ID)
 	notes, _ := d.DB.Notes(ctx, t.ID, "review", 4)
 	var prev []string
@@ -206,7 +220,8 @@ func (d *Daemon) prompt(ctx context.Context, t db.Task, r config.Repo) (string, 
 	}
 	wt := d.locate(t)
 	return prompts.RenderWorker(prompts.Worker{ID: t.ID, Worktree: wt.Path, Branch: wt.Branch,
-		Title: t.Title, Spec: t.Spec, Acceptance: t.Acceptance, Files: files, Previous: prev, Gate: r.Gate, Rules: rules})
+		Title: t.Title, Spec: t.Spec, Acceptance: t.Acceptance, Files: files, Previous: prev, Gate: r.Gate, Rules: rules,
+		Provider: provider})
 }
 
 // reap: finished processes, wall-clock overruns, lease renewal, and running tasks that no
@@ -360,4 +375,42 @@ func (d *Daemon) stopAll() {
 	for _, p := range d.procs {
 		killGroup(p.cmd)
 	}
+}
+
+// starting: a claimed task being prepared off the loop.
+type starting struct {
+	provider string
+	slot     int
+}
+
+// freeSlot: the lowest slot number no live or starting worker holds. A slot gives a worker
+// its own port range (PORT=20000+slot*10) and anything else that must not collide.
+func (d *Daemon) freeSlot() int {
+	used := map[int]bool{}
+	for _, p := range d.procs {
+		used[p.slot] = true
+	}
+	for _, st := range d.starting {
+		used[st.slot] = true
+	}
+	for i := 0; ; i++ {
+		if !used[i] {
+			return i
+		}
+	}
+}
+
+// overlapping returns a task in flight whose claims overlap these, or 0. A task without
+// claims declared no files and is not checked: declaring files is what buys the guarantee.
+func overlapping(claims []string, inFlight map[int64][]string) int64 {
+	for id, theirs := range inFlight {
+		for _, a := range claims {
+			for _, b := range theirs {
+				if gate.Overlap(a, b) {
+					return id
+				}
+			}
+		}
+	}
+	return 0
 }

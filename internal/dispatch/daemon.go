@@ -37,6 +37,7 @@ type proc struct {
 	done       chan error
 	deadline   time.Time
 	leaseUntil time.Time
+	slot       int
 	log        string
 }
 
@@ -57,7 +58,7 @@ type Daemon struct {
 
 	adapters map[string]provider.Adapter
 	procs    map[int64]*proc
-	starting map[int64]string // claimed, being prepared off the loop: task -> provider
+	starting map[int64]starting // claimed, being prepared off the loop
 	started  chan started
 	gating   map[int64]bool
 	results  chan gateResult
@@ -74,7 +75,7 @@ func New(cfg *config.Config, d *db.DB, swarmBin string) (*Daemon, error) {
 		Log:      slog.New(slog.NewJSONHandler(os.Stderr, nil)),
 		adapters: map[string]provider.Adapter{},
 		procs:    map[int64]*proc{},
-		starting: map[int64]string{},
+		starting: map[int64]starting{},
 		started:  make(chan started, 16),
 		gating:   map[int64]bool{},
 		results:  make(chan gateResult, 16),

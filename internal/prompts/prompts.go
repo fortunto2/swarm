@@ -18,6 +18,7 @@ type Worker struct {
 	Title, Spec, Acceptance string
 	Files, Previous, Gate   []string
 	Rules                   string
+	Provider                string // provider/model, for the commit trailer
 }
 
 func RenderWorker(w Worker) (string, error) {

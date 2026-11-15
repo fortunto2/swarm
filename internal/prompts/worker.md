@@ -25,7 +25,9 @@ Changing any other file fails the task. Need another one: call `claim_files` fir
 
 - Do not touch lock files or migrations unless you own them. Do not weaken, skip or delete tests.
 - Never `git push`, `git checkout main`, `git stash`. Commit only to your branch.
-- Commit message: `T{{.ID}}: <what>`, with trailers `Swarm-Task: {{.ID}}`.
+- Commit message: `T{{.ID}}: <what>`, with trailers `Swarm-Task: {{.ID}}` and
+  `Swarm-Provider: {{.Provider}}`.
+- Use `$PORT`..`$PORT+9` for anything that listens; other workers run next to you.
 
 ## How to work
 

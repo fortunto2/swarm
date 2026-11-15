@@ -40,3 +40,46 @@ mismatch.
 - Schemas: SQL schema with versioned migrations; MCP input schemas and the swarm.toml
   JSON Schema are inferred from Go types and pinned by tests.
 - ORM: none; database/sql with all SQL in `internal/db`.
+
+# Pass 2: what the PRD asks that was missed, and the registry (2026-11-15)
+
+Found by reading the PRD section by section against the code. One was a shipped bug:
+
+- **Fixed (6600f0e):** every task was measured against the run's base. After a rebase its
+  diff held other tasks' merged files and the gate failed it for touching files it does not
+  own; a task started after its dependency merged got a worktree without the dependency.
+  Reproduced with a two-task test before fixing.
+
+## Where the registry lives
+
+| What | Where | Why there |
+|---|---|---|
+| Subscriptions (accounts): kind, family, slots, tiers, models, **roles**, **priority**, **daily budget** | `swarm.toml` of the profile, `[providers.<id>]` | declared, reviewed as a diff; the profile is the world, so solo and Epiphan never share an account by construction |
+| Machines: which accounts are logged in there, max workers, roles | `swarm.toml`, `[nodes.<id>]` | same |
+| Live state of each subscription: ok / cooling / disabled, until when, why | profile db, table `providers` | changes by the minute; only swarmd writes it |
+| Spend: tokens and dollars per attempt | profile db, `attempts` | measured from the CLI's final event |
+| Rate-limit windows of a Claude account (5 h, week) | the harness's `out/limits/*.json` (status line) | already measured there; swarm reads, never duplicates (plan phase 3) |
+| Workers | not a registry: an attempt is a process with a row in `attempts` | a worker lives one attempt; `swarm providers` shows who is busy |
+
+Roles: `worker` (does tasks), `reviewer` (reviews another family's diff, phase 4), `lead`
+(decomposes, phase 2: Fable only, by the PRD). A provider without `roles` is a worker.
+Priority: lower first among providers that can take a tier; ties by name. Task priority
+already orders the queue.
+
+| # | Step | PRD | Status |
+|---|---|---|---|
+| 12 | Never run two tasks whose write claims overlap (path or `dir/` prefix) at once | §7 Schedule, MUST | done |
+| 13 | Single writer: `swarm task add` goes through the daemon when it is running | §3, §5 MUST | |
+| 14 | Worker env: `DISABLE_AUTOUPDATER=1`, a slot number, `PORT=20000+slot*10` | §8, §12 | done |
+| 15 | Provider registry: `roles`, `priority`, `budget_usd_day` (spent → cooling to next UTC midnight); live state in `providers`; `swarm providers` and in `swarm_status` | §2, §7, §11 | |
+| 16 | Notify on run done and on a task blocked; `caffeinate` on macOS while running; hourly `git worktree prune` | §11, §12, §8 | |
+| 17 | A failed gate command is rerun once before the verdict (flaky tests) | §12 | |
+| 18 | Commit trailer `Swarm-Provider` in the worker prompt | §8 | done |
+
+Still open, by phase (not in this pass): the lead and its tools (`create_tasks`, `resolve`,
+`update_task`, `announce`, `split_task`, `claim_files`, `list_notes`, wake triggers, final
+integration task); codex adapter, cross-family review, 429/quota patterns from config,
+cooling with backoff and a probe run, escalation to a higher tier on attempt 3, overflow to
+`claude-api` with a $ cap; containers and egress allowlist; `swarm report`, `logs`, `stop`,
+`pause`, log retention; the harness-core contract (runs.jsonl, `task item --done`, limits);
+the solo and Epiphan profiles with `merge = "pr"`.

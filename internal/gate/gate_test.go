@@ -100,3 +100,20 @@ func TestRunStopsAtFirstFailure(t *testing.T) {
 		t.Fatal("ran a command after a failure")
 	}
 }
+
+func TestOverlap(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"a.go", "a.go", true}, {"a.go", "b.go", false},
+		{"pkg/", "pkg/x.go", true}, {"pkg/x.go", "pkg/", true},
+		{"pkg/", "pkg/sub/", true}, {"pkg/", "pkgx/", false},
+		{"*.go", "a.go", true}, {"docs/", "a.go", false},
+	}
+	for _, c := range cases {
+		if got := Overlap(c.a, c.b); got != c.want {
+			t.Errorf("Overlap(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}

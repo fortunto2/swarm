@@ -453,3 +453,37 @@ swarm board done "$(git rev-parse HEAD)"
 		t.Fatalf("want both merged:\n%s\n%s", st, out)
 	}
 }
+
+// Two tasks claiming the same directory never hold workers at the same time, even with
+// two slots free: each worker checks for the other's lock while it works.
+func TestOverlappingClaimsNeverRunTogether(t *testing.T) {
+	repo := testbed(t)
+	marks := t.TempDir()
+	clash := filepath.Join(marks, "clash")
+	worker := fmt.Sprintf(`touch %[1]s/lock.$SWARM_TASK_ID
+sleep 1
+if ls %[1]s/lock.* | grep -v "lock.$SWARM_TASK_ID$" >/dev/null; then touch %[2]q; fi
+mkdir -p pkg && printf 'package pkg\n\nfunc T%%s() {}\n' "$SWARM_TASK_ID" > "pkg/t$SWARM_TASK_ID.go"
+rm -f %[1]s/lock.$SWARM_TASK_ID
+git add -A && git commit -qm "T$SWARM_TASK_ID"
+swarm board done "$(git rev-parse HEAD)"
+`, marks, clash)
+	prof := profile(t, repo, worker, 2)
+	for _, a := range [][]string{
+		{"task", "add", "--repo", "app", "--title", "A", "--spec", "a", "--acceptance", "x", "--files", "pkg/"},
+		{"task", "add", "--repo", "app", "--run", "1", "--title", "B", "--spec", "b", "--acceptance", "x", "--files", "pkg/"},
+	} {
+		if out, err := swarm(t, prof, 30*time.Second, a...); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	}
+	if out, err := swarm(t, prof, 2*time.Minute, "daemon", "--until-idle"); err != nil {
+		t.Fatalf("daemon: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(clash); err == nil {
+		t.Fatal("two workers held overlapping claims at the same time")
+	}
+	if st := status(t, prof); !strings.Contains(st, "merged       2") {
+		t.Fatalf("want both merged:\n%s", st)
+	}
+}
