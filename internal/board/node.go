@@ -20,14 +20,21 @@ type NodeHub interface {
 	View() any
 }
 
+// NodeProtocol: what orders a node understands. A coordinator places new work only on a node
+// at its own protocol or later; an older node keeps its running work and gates, and status
+// says to upgrade it. 1: nodes (absent in a hello = 1). 2: a start order's Ref names a joined
+// base to fetch (taskbase), which a protocol-1 node ignores and then fails the start.
+const NodeProtocol = 2
+
 // NodeHello: a node says who it is and what it holds. Live and Worktrees let a daemon that
 // restarted, or a node that reconnects, agree on what is still running and what can go.
 type NodeHello struct {
-	Name    string   `json:"name"`
-	Version string   `json:"version,omitempty"`
-	Root    string   `json:"root"`  // the node's worktree root
-	Repos   []string `json:"repos"` // repos it has a copy of
-	Live    []string `json:"live,omitempty"`
+	Name     string   `json:"name"`
+	Version  string   `json:"version,omitempty"`
+	Protocol int      `json:"protocol,omitempty"`
+	Root     string   `json:"root"`  // the node's worktree root
+	Repos    []string `json:"repos"` // repos it has a copy of
+	Live     []string `json:"live,omitempty"`
 	// Worktrees by repo and task. A new name: a node of the release before sent bare ids
 	// under "worktrees", which this coordinator ignores (it never cleans by id alone), and
 	// an older coordinator ignores this field. Neither side fails the other's hello.

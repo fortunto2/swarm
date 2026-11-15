@@ -240,3 +240,39 @@ func TestGateElsewhereOnlyForANamedNodeThatIsNotHere(t *testing.T) {
 		}
 	}
 }
+
+// A node of an older protocol keeps its running work but takes nothing new, and says why:
+// a protocol-1 node ignores a start order's base ref and fails every dependent start
+// (blind review, 2026-11-15). A current node admits as its own limits say.
+func TestAnOutdatedNodeTakesNoNewWork(t *testing.T) {
+	sdb, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+	ctx := context.Background()
+	cfg := &config.Config{Repos: map[string]config.Repo{"app": {}}, Nodes: map[string]config.Node{
+		"old": {Host: "remote", Accounts: []string{"m"}}, "new": {Host: "remote", Accounts: []string{"n"}}}}
+	cfg.Limits.NodeTimeout.Duration = time.Minute
+	d := &Daemon{Cfg: cfg, DB: sdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	d.hub = newHub(d)
+	d.nodeEv = make(chan nodeEvent, 8)
+	for name, proto := range map[string]int{"old": 0, "new": board.NodeProtocol} {
+		w, err := d.hub.Hello(ctx, board.NodeHello{Name: name, Protocol: proto, Root: "/wt", Repos: []string{"app"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.hub.Poll(ctx, board.NodePoll{Session: w.Session, Admit: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if online, admitting, _ := d.hub.usable("old"); !online || admitting {
+		t.Fatalf("old node: online %v admitting %v, want online and holding", online, admitting)
+	}
+	if online, admitting, _ := d.hub.usable("new"); !online || !admitting {
+		t.Fatalf("current node: online %v admitting %v", online, admitting)
+	}
+	if why := d.hub.nodes["old"].why; !strings.Contains(why, "upgrade") {
+		t.Fatalf("why = %q, want the reason to upgrade", why)
+	}
+}

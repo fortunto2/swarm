@@ -42,6 +42,7 @@ type nodeState struct {
 	root    string
 	repos   map[string]bool
 	version string
+	proto   int // board.NodeProtocol it speaks; 1 when its hello did not say
 	seen    time.Time
 	admit   bool
 	why     string
@@ -137,7 +138,8 @@ func (h *hub) Hello(ctx context.Context, in board.NodeHello) (board.NodeWelcome,
 	}
 	h.mu.Lock()
 	old := h.nodes[in.Name]
-	n := &nodeState{session: w.Session, root: in.Root, repos: repos, version: in.Version, seen: time.Now(),
+	proto := max(in.Protocol, 1)
+	n := &nodeState{session: w.Session, root: in.Root, repos: repos, version: in.Version, proto: proto, seen: time.Now(),
 		live: in.Live, wake: make(chan struct{}, 1)}
 	if old != nil {
 		n.cmds = old.cmds // orders queued while it was away still stand
@@ -167,6 +169,11 @@ func (h *hub) session(s string) (string, *nodeState, error) {
 	return "", nil, &board.Error{Code: "stale_session", Hint: "say hello again"}
 }
 
+// outdated: why a node of an older protocol takes no new work.
+func outdated(proto int) string {
+	return fmt.Sprintf("speaks node protocol %d, the coordinator %d: upgrade this node's swarm (new work waits)", proto, board.NodeProtocol)
+}
+
 func (h *hub) Poll(ctx context.Context, in board.NodePoll) (board.NodeOrders, error) {
 	h.mu.Lock()
 	name, n, err := h.session(in.Session)
@@ -175,6 +182,9 @@ func (h *hub) Poll(ctx context.Context, in board.NodePoll) (board.NodeOrders, er
 		return board.NodeOrders{}, err
 	}
 	n.seen, n.admit, n.why, n.live = time.Now(), in.Admit, in.Why, in.Live
+	if n.proto < board.NodeProtocol { // its running work and gates go on; nothing new starts there
+		n.admit, n.why = false, outdated(n.proto)
+	}
 	for _, wk := range in.Live { // a worker nobody here expects: an attempt that already ended
 		if !h.expect[wk] && !slices.ContainsFunc(n.cmds, func(c board.NodeCmd) bool { return c.Kind == "kill" && c.Worker == wk }) {
 			n.cmds = append(n.cmds, board.NodeCmd{Kind: "kill", Worker: wk})

@@ -332,7 +332,7 @@ func (n *Node) report(ctx context.Context, r board.NodeReport) {
 }
 
 func (n *Node) hello(ctx context.Context) error {
-	in := board.NodeHello{Name: n.Cfg.Node.Name, Version: n.Version, Root: n.Cfg.Profile.WorktreeRoot,
+	in := board.NodeHello{Name: n.Cfg.Node.Name, Version: n.Version, Protocol: board.NodeProtocol, Root: n.Cfg.Profile.WorktreeRoot,
 		Repos: slices.Sorted(maps.Keys(n.Cfg.Repos)), Live: n.live(), Worktrees: n.worktrees()}
 	var w board.NodeWelcome
 	if err := n.call(ctx, "node_hello", in, &w); err != nil {

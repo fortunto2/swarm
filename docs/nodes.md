@@ -136,5 +136,11 @@ repos the coordinator has no copy of. Transports other than a command's stdin/st
 A task that needs others starts on main joined with their deliveries (`internal/taskbase`);
 the coordinator keeps that commit at `refs/swarm/base/T<id>-<sha12>` and the start order names
 it, so the node fetches it. A node older than this ignores the ref, fetches main, and fails
-such a start with "base ... is not on the coordinator's main": upgrade nodes with the
-coordinator (`swarm status` prints a node whose build differs).
+such a start with "base ... is not on the coordinator's main".
+
+## Node protocol
+
+A hello carries `board.NodeProtocol`. The coordinator places new work only on a node that
+speaks its protocol or a later one; an older node keeps its running attempts and gates, and
+`swarm status` shows it holding with "upgrade this node's swarm". Bump the constant when an
+order gains a field an older node would silently ignore (2: a start's base ref).
