@@ -642,3 +642,19 @@ func (d *DB) RunTopic(ctx context.Context, runID int64) string {
 	_ = d.QueryRowContext(ctx, `SELECT coalesce(topic,'') FROM runs WHERE id=?`, runID).Scan(&topic)
 	return topic
 }
+
+// Held: the host's last answer to limits.admit, when it was a hold: the reason and since when.
+// ok is false when the last recorded answer admitted, or none was ever recorded.
+func (d *DB) Held(ctx context.Context) (why string, since int64, ok bool) {
+	var typ, data string
+	err := d.QueryRowContext(ctx, `SELECT type, coalesce(data,''), at FROM events
+		WHERE type IN ('held','admitted') ORDER BY id DESC LIMIT 1`).Scan(&typ, &data, &since)
+	if err != nil || typ != "held" {
+		return "", 0, false
+	}
+	var v struct {
+		Why string `json:"why"`
+	}
+	_ = json.Unmarshal([]byte(data), &v)
+	return v.Why, since, true
+}

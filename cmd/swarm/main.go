@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -97,6 +98,10 @@ func main() {
 			fmt.Fprintf(out, "profile %s\n", c.Profile.Name)
 			for _, k := range slices.Sorted(maps.Keys(counts)) {
 				fmt.Fprintf(out, "  %-12s %d\n", k, counts[k])
+			}
+			if why, since, held := d.Held(context.Background()); held && c.Limits.Admit != "" {
+				fmt.Fprintf(out, "  held since %s: %s (limits.admit; nothing new starts)\n",
+					time.Unix(since, 0).UTC().Format("01-02 15:04Z"), why)
 			}
 			return nil
 		},

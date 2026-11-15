@@ -1143,6 +1143,8 @@ func TestAdmitHoldsWorkUntilTheHostSaysYes(t *testing.T) {
 	time.Sleep(5 * time.Second)
 	if st := status(t, prof); !strings.Contains(st, "ready        1") {
 		t.Fatalf("a held host started work anyway:\n%s\n%s", st, log.String())
+	} else if !strings.Contains(st, "held since") || !strings.Contains(st, "another job runs") {
+		t.Fatalf("status does not say why ready work waits:\n%s", st)
 	}
 	if err := os.WriteFile(gateFile, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -1157,6 +1159,9 @@ func TestAdmitHoldsWorkUntilTheHostSaysYes(t *testing.T) {
 	}
 	if st := status(t, prof); !strings.Contains(st, "merged       1") {
 		t.Fatalf("want merged:\n%s\n%s", st, log.String())
+	}
+	if st := status(t, prof); strings.Contains(st, "held since") {
+		t.Fatalf("status still shows a hold after the host admitted:\n%s", st)
 	}
 	if !strings.Contains(log.String(), `"msg":"held","why":"another job runs"`) {
 		t.Fatalf("the hold and its reason are not in the log:\n%s", log.String())

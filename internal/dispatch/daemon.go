@@ -514,11 +514,10 @@ func (d *Daemon) applyAdmit(ctx context.Context, a admission) {
 	if prev.checked && prev.ok == a.ok {
 		return
 	}
+	// the first answer is recorded too, so `swarm status` never shows a hold from a past run
 	if a.ok {
-		if prev.checked {
-			d.Log.Info("admitted")
-			d.DB.Event(ctx, "swarmd", 0, "admitted", nil)
-		}
+		d.Log.Info("admitted")
+		d.DB.Event(ctx, "swarmd", 0, "admitted", nil)
 		return
 	}
 	d.Log.Info("held", "why", a.why)
