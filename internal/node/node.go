@@ -58,9 +58,9 @@ type Node struct {
 	Dial func(ctx context.Context) (io.ReadWriteCloser, string, error)
 
 	mu       sync.Mutex
-	syncing  sync.Mutex      // one keepInStep at a time
-	statusMu sync.Mutex      // status hooks run in the order the moves came
-	gating   map[string]bool // gates running here, by task and commit: a repeated order waits for the first
+	syncing  sync.Mutex         // one keepInStep at a time
+	moves    chan board.NodeCmd // status orders, run one at a time in the order they came
+	gating   map[string]bool    // gates running here, by task and commit: a repeated order waits for the first
 	up       *rpc.Client
 	token    string
 	session  string
@@ -87,6 +87,12 @@ type attempt struct {
 // Run serves the workers' socket and keeps the link up until ctx ends.
 func (n *Node) Run(ctx context.Context) error {
 	n.running, n.mains, n.gating = map[string]*attempt{}, map[string]string{}, map[string]bool{}
+	n.moves = make(chan board.NodeCmd, 256)
+	go func() { // one reader: a board never ends on an older status
+		for c := range n.moves {
+			n.statusHooks(ctx, c)
+		}
+	}()
 	if n.Log == nil {
 		n.Log = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	}
@@ -251,22 +257,15 @@ func (n *Node) session1(ctx context.Context) error {
 		if n.syncing.TryLock() { // off the poll loop: a stalled fetch must not stop the polls
 			go func() { defer n.syncing.Unlock(); n.keepInStep(ctx, orders.Mains) }()
 		}
-		var moves []board.NodeCmd
 		for _, c := range orders.Cmds {
 			if c.Kind == "status" {
-				moves = append(moves, c)
+				select {
+				case n.moves <- c:
+				default: // hooks far behind: a board misses a move rather than the poll loop stalling
+				}
 				continue
 			}
 			go n.do(ctx, c)
-		}
-		if len(moves) > 0 { // in order: a board must not end on an older status
-			go func() {
-				n.statusMu.Lock()
-				defer n.statusMu.Unlock()
-				for _, c := range moves {
-					n.statusHooks(ctx, c)
-				}
-			}()
 		}
 	}
 	return ctx.Err()
@@ -341,8 +340,8 @@ func (n *Node) hello(ctx context.Context) error {
 	n.mu.Lock()
 	n.session, n.welcome, n.adapters = w.Session, w, adapters
 	n.mu.Unlock()
-	for _, ref := range w.Cleanup {
-		n.cleanup(ctx, ref.Repo, ref.Task)
+	for _, ref := range w.Cleanup { // off the poll loop: a cleanup may wait out a preparing attempt
+		go n.cleanup(ctx, ref.Repo, ref.Task)
 	}
 	return nil
 }
@@ -427,8 +426,7 @@ func (n *Node) do(ctx context.Context, c board.NodeCmd) {
 		n.gate(ctx, c)
 	case "cleanup":
 		n.cleanup(ctx, c.Repo, c.Task)
-	case "status":
-		n.statusHooks(ctx, c)
+
 	default:
 		n.Log.Warn("unknown order", "kind", c.Kind)
 	}

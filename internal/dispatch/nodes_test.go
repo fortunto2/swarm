@@ -174,6 +174,13 @@ func TestGateWithoutVerdictBlocksAfterMaxAgain(t *testing.T) {
 	}
 	d := &Daemon{Cfg: &config.Config{}, DB: sdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		gating: map[int64]bool{}, gateCancel: map[int64]context.CancelFunc{}, regate: map[int64]regate{}}
+	// no-verdicts on another commit do not count toward this one's streak
+	for i := 1; i < maxGateAgain; i++ {
+		d.applyGate(ctx, gateResult{taskID: id, commit: "older", again: true, why: "went away"})
+	}
+	if task, _ := sdb.GetTask(ctx, id); task.Status != db.Verifying {
+		t.Fatalf("no-verdicts for another commit blocked this one: %s", task.Status)
+	}
 	for i := 1; i <= maxGateAgain; i++ {
 		d.applyGate(ctx, gateResult{taskID: id, commit: commit, again: true, why: "node mac could not run it: disk full"})
 		task, _ := sdb.GetTask(ctx, id)

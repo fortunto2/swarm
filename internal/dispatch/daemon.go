@@ -67,10 +67,12 @@ type gateResult struct {
 	why    string // and why, for the event and the task's note
 }
 
-// regate: a node gate that got no verdict is not ordered again before at, for that commit.
+// regate: a node gate that got no verdict is not ordered again before at, for that commit;
+// n counts the no-verdicts in a row for that commit (a verdict, or another commit, resets it).
 type regate struct {
 	commit string
 	at     time.Time
+	n      int
 }
 
 type Daemon struct {

@@ -82,9 +82,15 @@ func CurrentBranch(ctx context.Context, dir string) string {
 // The URL comes from the node's profile, not from a repo a worker can write.
 func Transfer(ctx context.Context, dir string, args ...string) (string, error) {
 	// url.<x>.insteadOf in the repo's own config rewrites even a URL given on the command
-	// line, and a worker can write that config: refuse rather than push where it points
-	if rw, _ := Run(ctx, dir, "config", "--local", "--get-regexp", `^url\.`); rw != "" {
-		return "", fmt.Errorf("the repo's config rewrites URLs (%s): not transferring", strings.Fields(rw)[0])
+	// line, and a worker can write that config (and what it includes, and a worktree's
+	// config.worktree): refuse rather than push where it points. The operator's global and
+	// system rules are theirs.
+	if rw, _ := Run(ctx, dir, "config", "--show-scope", "--includes", "--get-regexp", `^url\.`); rw != "" {
+		for _, ln := range strings.Split(rw, "\n") {
+			if f := strings.Fields(ln); len(f) >= 2 && (f[0] == "local" || f[0] == "worktree") {
+				return "", fmt.Errorf("the repo's config rewrites URLs (%s): not transferring", f[1])
+			}
+		}
 	}
 	full := append([]string{}, hardened...)
 	full = append(full, "-c", "protocol.file.allow=always", "-c", "protocol.ssh.allow=always", "-c", "protocol.https.allow=always",

@@ -113,7 +113,10 @@ coordinator's host is that user, and gets the operator token (it could read it f
 state directory anyway). A node is trusted like the coordinator's own machine. Its workers
 are not: they run as the node's user and can write their worktree's shared `.git/config`, so
 the node's own git transfers ignore what that config says about ssh commands, credential
-helpers and proxies, and refuse a repo whose config rewrites URLs. A worker on a node that
+helpers and proxies, and refuse a repo whose own config (or a file it includes, or a
+worktree's config) rewrites URLs with `url.<x>.insteadOf`; keep such rules in the global
+config. A node and a coordinator one release apart still connect: fields that changed shape
+got new names, so each side ignores what it does not know. A worker on a node that
 holds the user's ssh keys can reach the coordinator the way the node does; give workers
 `safety = "strict"` (a sandbox) where that matters.
 

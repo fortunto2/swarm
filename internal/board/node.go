@@ -23,12 +23,15 @@ type NodeHub interface {
 // NodeHello: a node says who it is and what it holds. Live and Worktrees let a daemon that
 // restarted, or a node that reconnects, agree on what is still running and what can go.
 type NodeHello struct {
-	Name      string    `json:"name"`
-	Version   string    `json:"version,omitempty"`
-	Root      string    `json:"root"`  // the node's worktree root
-	Repos     []string  `json:"repos"` // repos it has a copy of
-	Live      []string  `json:"live,omitempty"`
-	Worktrees []TaskRef `json:"worktrees,omitempty"`
+	Name    string   `json:"name"`
+	Version string   `json:"version,omitempty"`
+	Root    string   `json:"root"`  // the node's worktree root
+	Repos   []string `json:"repos"` // repos it has a copy of
+	Live    []string `json:"live,omitempty"`
+	// Worktrees by repo and task. A new name: a node of the release before sent bare ids
+	// under "worktrees", which this coordinator ignores (it never cleans by id alone), and
+	// an older coordinator ignores this field. Neither side fails the other's hello.
+	Worktrees []TaskRef `json:"worktree_refs,omitempty"`
 }
 
 // TaskRef: a task's worktree on a node, by repo and id. The repo matters: another profile
@@ -54,7 +57,7 @@ type NodeWelcome struct {
 	Session   string                     `json:"session"`
 	Providers map[string]config.Provider `json:"providers"`
 	Repos     map[string]RepoView        `json:"repos"`
-	Cleanup   []TaskRef                  `json:"cleanup,omitempty"`
+	Cleanup   []TaskRef                  `json:"cleanup_refs,omitempty"` // a new name, as Worktrees
 }
 
 // NodePoll waits up to Wait seconds for orders. Admit is the node's own limits.admit

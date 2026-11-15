@@ -102,7 +102,11 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 	delete(d.gateCancel, r.taskID)
 	if r.again {
 		d.DB.Event(ctx, "swarmd", r.taskID, "gate_again", map[string]string{"why": r.why, "commit": r.commit})
-		if n, _ := d.DB.EventCountSinceRetry(ctx, r.taskID, "gate_again"); n >= maxGateAgain {
+		n := 1
+		if prev, ok := d.regate[r.taskID]; ok && prev.commit == r.commit {
+			n = prev.n + 1 // in a row, for this commit
+		}
+		if n >= maxGateAgain {
 			delete(d.regate, r.taskID)
 			if d.DB.Move(ctx, "swarmd", r.taskID, []db.Status{db.Verifying}, db.Blocked, db.Patch{}) == nil {
 				t, _ := d.DB.GetTask(ctx, r.taskID)
@@ -112,7 +116,7 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 			}
 			return
 		}
-		d.regate[r.taskID] = regate{commit: r.commit, at: time.Now().Add(time.Minute)}
+		d.regate[r.taskID] = regate{commit: r.commit, at: time.Now().Add(time.Minute), n: n}
 		return // still verifying: gated again on the node in a minute, or once it is back
 	}
 	delete(d.regate, r.taskID)
