@@ -166,6 +166,9 @@
         },
         "admit": {
           "type": "string"
+        },
+        "escalate_after": {
+          "type": "integer"
         }
       },
       "additionalProperties": false

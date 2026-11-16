@@ -96,6 +96,10 @@ type Limits struct {
 	// or gates start. Exit 0 admits; anything else holds them, and the first output line is
 	// the reason. For a host shared with other work: hold while it runs, or while memory is low.
 	Admit string `toml:"admit" json:"admit,omitempty"`
+	// EscalateAfter: a tier-B task that failed this many attempts in a row (gate, review, wall
+	// clock) is taken by a tier-A provider and model from then on. Default 2 (the third attempt
+	// is the stronger one); negative never escalates.
+	EscalateAfter int `toml:"escalate_after" json:"escalate_after,omitempty"`
 }
 
 type Provider struct {
@@ -270,6 +274,9 @@ func (c *Config) defaults() {
 	}
 	if c.Limits.TaskWallClock.Duration == 0 {
 		c.Limits.TaskWallClock.Duration = 45 * time.Minute
+	}
+	if c.Limits.EscalateAfter == 0 {
+		c.Limits.EscalateAfter = 2
 	}
 	if c.Limits.MaxAttempts == 0 {
 		c.Limits.MaxAttempts = 4

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -104,10 +105,13 @@ func startNode(t *testing.T, nodeProf string) (*exec.Cmd, *safeBuf) {
 	log := &safeBuf{mu: make(chanMutex, 1)}
 	n := exec.Command(bin, "--profile", nodeProf, "node")
 	n.Stdout, n.Stderr = log, log
+	// its own group, killed whole: a git fetch it started outlived a kill of the node alone and
+	// was still writing into the clone's .git when the test removed it (seen under full load)
+	n.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := n.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = n.Process.Kill(); _ = n.Wait() })
+	t.Cleanup(func() { _ = syscall.Kill(-n.Process.Pid, syscall.SIGKILL); _ = n.Wait() })
 	return n, log
 }
 

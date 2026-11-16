@@ -98,13 +98,21 @@ func (d *Daemon) schedule(ctx context.Context) error {
 		if blocker := overlapping(claims, inFlight); blocker != 0 {
 			continue // waits for T<blocker> to merge or fail: same files, PRD §7
 		}
-		pid, ok := d.pickProvider(t.Tier, busy, func(id string) bool { return d.fits(t, id, perNode) })
+		tier := d.tierFor(t)
+		pid, ok := d.pickProvider(tier, busy, func(id string) bool { return d.fits(t, id, perNode) })
+		if !ok && tier != t.Tier { // nobody serves the stronger tier now: the task's own still works
+			tier = t.Tier
+			pid, ok = d.pickProvider(tier, busy, func(id string) bool { return d.fits(t, id, perNode) })
+		}
 		if !ok {
 			continue
 		}
 		node := d.Cfg.NodeOf(pid)
 		p := d.Cfg.Providers[pid]
-		model := p.Models[t.Tier]
+		model := p.Models[tier]
+		if tier != t.Tier {
+			d.DB.Event(ctx, "swarmd", t.ID, "escalated", map[string]any{"tier": tier, "provider": pid, "failed": t.Attempts})
+		}
 		n, err := d.DB.AttemptCount(ctx, t.ID)
 		if err != nil {
 			return err
@@ -146,6 +154,16 @@ type started struct {
 	p      *proc
 	model  string
 	err    error
+}
+
+// tierFor: the tier a task's next attempt runs at. A tier-B task that failed
+// limits.escalate_after attempts in a row goes to tier A: the same model failing the same way
+// a third time is the likeliest outcome, and the stronger one costs one attempt to try.
+func (d *Daemon) tierFor(t db.Task) string {
+	if n := d.Cfg.Limits.EscalateAfter; t.Tier == "B" && n > 0 && t.Attempts >= n {
+		return "A"
+	}
+	return t.Tier
 }
 
 // prepare does the slow part of a start off the loop: the worktree (a checkout of the whole

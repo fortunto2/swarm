@@ -183,9 +183,10 @@ example config does. Any MCP server works the same way.
 2. ~~One provider, one worker: board, worktree, gate, ff merge~~ (scripted and live Claude runs)
    ~~Session tools: any Claude Code session queues and watches work over MCP~~
 3. Lead and task tree: decomposition, `split_task`, dependencies, file claims, batched merge queue
-4. Several providers: ~~Codex adapter~~ (`codex exec --json`, usage limits cool the account),
-   ~~review~~ (a gate stage, `review = "<provider>"`: another family's account where you have one), tiers,
-   rate-limit failover
+4. ~~Several providers~~: Codex adapter (`codex exec --json`, usage limits cool the account),
+   review (a gate stage, `review = "<provider>"`: another family's account where you have one), tiers
+   with escalation (`limits.escalate_after`: a tier-B task that failed twice runs at tier A), a limit
+   hit cools the account and the others take the work
 5. Sandbox: workers in containers with an egress allowlist; unattended overnight runs
 6. ~~`merge = "branch"`: the gated commit goes to a branch for a human to review and push~~;
    `merge = "pr"`: the same, plus the PR description
