@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fortunto2/swarm/internal/board"
+	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/dispatch"
 	"github.com/fortunto2/swarm/internal/jobs"
@@ -95,4 +97,27 @@ func jobsCmd() *cobra.Command {
 		},
 	})
 	return c
+}
+
+// printJobs: one status line for the scheduled jobs, naming those whose newest run failed.
+func printJobs(out io.Writer, c *config.Config, d *db.DB) {
+	if len(c.Jobs) == 0 {
+		return
+	}
+	runs, err := d.LatestJobRuns(context.Background())
+	if err != nil {
+		return
+	}
+	var failing []string
+	for _, r := range runs {
+		if _, ok := c.Jobs[r.Job]; ok && r.Exit != nil && *r.Exit != 0 {
+			failing = append(failing, fmt.Sprintf("%s exit %d %s ago", r.Job, *r.Exit,
+				time.Since(time.Unix(r.StartedAt, 0)).Round(time.Minute)))
+		}
+	}
+	line := fmt.Sprintf("  jobs: %d", len(c.Jobs))
+	if len(failing) > 0 {
+		line += ", last run failed: " + strings.Join(failing, "; ") + " (swarm jobs)"
+	}
+	fmt.Fprintln(out, line)
 }

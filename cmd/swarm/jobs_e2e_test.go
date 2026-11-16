@@ -58,6 +58,9 @@ run = "echo nope; exit 2"
 	if got, _ := filepath.EvalSymlinks(strings.TrimSpace(string(pwd))); got != mustEval(t, repo) {
 		t.Fatalf("the job ran in %q, want its repo %q", got, repo)
 	}
+	if st := status(t, prof); !strings.Contains(st, "jobs: 2, last run failed: broken exit 2") {
+		t.Fatalf("status does not name the failing job:\n%s", st)
+	}
 	if tail := sqlite(t, prof, "SELECT tail FROM job_runs WHERE job='hello'"); !strings.Contains(tail, "hello from hello") {
 		t.Fatalf("output kept: %q", tail)
 	}

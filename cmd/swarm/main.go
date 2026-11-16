@@ -113,6 +113,7 @@ func main() {
 			if len(counts) == 0 {
 				fmt.Fprintf(out, "profile %s: no tasks\n", c.Profile.Name)
 				printNodes(out, c, d) // an empty queue is when one checks that the machines are there
+				printJobs(out, c, d)
 				return nil
 			}
 			fmt.Fprintf(out, "profile %s\n", c.Profile.Name)
@@ -123,6 +124,7 @@ func main() {
 				// a hold recorded by a daemon that is gone says nothing about now
 				fmt.Fprintln(out, "  daemon not running: nothing starts until `swarm daemon` runs")
 				printNodes(out, c, d)
+				printJobs(out, c, d)
 				return nil
 			}
 			if s := staleDaemon(c.StatePath(), revision()); s != "" {
@@ -136,6 +138,7 @@ func main() {
 					time.Unix(since, 0).UTC().Format("01-02 15:04Z"), why)
 			}
 			printNodes(out, c, d)
+			printJobs(out, c, d)
 			return nil
 		},
 	})
