@@ -302,3 +302,36 @@ func TestANodesSyncWarningIsRecorded(t *testing.T) {
 		t.Fatalf("node record: %+v %v", rows, err)
 	}
 }
+
+// A repo with a reviewer whose gate verdict comes back without a review stage (an older node
+// ran the gate and ignored the review) is not merged quietly: the skip is an event and a
+// notification. The change still merges: a review that did not run never holds the work.
+func TestAGateVerdictWithoutTheReviewIsSaidOutLoud(t *testing.T) {
+	sdb, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+	ctx := context.Background()
+	run, _ := sdb.CreateRun(ctx, "x", "", "base")
+	id, _ := sdb.AddTask(ctx, db.NewTask{RunID: run, Repo: "app", Title: "T", Spec: "s", Acceptance: "a", Tier: "B"})
+	commit := "c0ffee"
+	for _, mv := range []struct{ from, to db.Status }{{db.Ready, db.Running}, {db.Running, db.Verifying}} {
+		if err := sdb.Move(ctx, "t", id, []db.Status{mv.from}, mv.to, db.Patch{ResultCommit: &commit}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notified := filepath.Join(t.TempDir(), "notified")
+	cfg := &config.Config{Repos: map[string]config.Repo{"app": {Review: "rev"}}}
+	cfg.Profile.Notify = "cat >> " + notified + " <<EOF\n$1\nEOF"
+	d := &Daemon{Cfg: cfg, DB: sdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		gating: map[int64]bool{}, gateCancel: map[int64]context.CancelFunc{}, regate: map[int64]regate{}}
+	d.applyGate(ctx, gateResult{taskID: id, commit: commit, v: gate.Verdict{OK: true, Stage: "gate"}})
+	d.waitBackground()
+	if n, _ := sdb.EventCountWith(ctx, id, "review_skipped", "upgrade its swarm"); n != 1 {
+		t.Fatalf("review_skipped events = %d, want 1", n)
+	}
+	if tk, _ := sdb.GetTask(ctx, id); tk.Status != db.Merging {
+		t.Fatalf("status %s, want merging: an unrun review does not hold the work", tk.Status)
+	}
+}

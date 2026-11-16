@@ -735,12 +735,15 @@ func (n *Node) gate(ctx context.Context, c board.NodeCmd) {
 	n.Log.Info("gate started", "task", c.Task, "commit", c.Commit)
 	vd := gate.Run(ctx, dir, v.Gate, v.GateTimeout.Duration, v.Reruns)
 	if v.Review != "" && c.Base != "" {
+		if _, err := gitx.Head(ctx, r.Path, c.Base+"^{commit}"); err != nil {
+			_ = n.fetchMain(ctx, c.Repo) // the diff starts at the task's base: main, as a rule
+		}
 		s := review.Spec{Task: review.Task{ID: c.Task, Title: c.Title, Spec: c.Spec, Acceptance: c.Acceptance},
 			Base: c.Base, Dir: dir, Reviewer: v.Review, Cache: filepath.Join(n.Cfg.StatePath(), "reviews")}
 		n.mu.Lock()
 		p := n.welcome.Providers[v.Review]
 		n.mu.Unlock()
-		if run, err := provider.Reviewer(v.Review, p, n.Cfg.Profile); err != nil {
+		if run, err := provider.Reviewer(v.Review, p, n.Cfg.Profile, n.Cfg.WorkerDeny()); err != nil {
 			s.Run = func(context.Context, string, string) (string, error) { return "", err }
 		} else {
 			s.Run = run

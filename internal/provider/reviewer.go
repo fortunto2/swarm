@@ -8,16 +8,23 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/envx"
+	"github.com/fortunto2/swarm/internal/shellx"
 )
 
 // Reviewer: a provider as a read-only reader of a change (internal/review). The prompt goes on
-// stdin; the result is the model's final text. It never edits: Claude gets Read, Grep and Glob
-// only, everything else disallowed and nobody to approve a prompt; Codex runs in its read-only
-// sandbox. A mock runs its command with the prompt on stdin and returns what it prints.
-func Reviewer(id string, p config.Provider, prof config.Profile) (func(ctx context.Context, prompt, dir string) (string, error), error) {
+// stdin; the result is the model's final text. It never edits: Claude has only Read, Grep and
+// Glob, loads the operator's user settings and no others (the checkout is the author's: its
+// .claude/, CLAUDE.md and .mcp.json must not configure the reader, as they could run hooks
+// with the account), no skills, and deny rules on deny (state, accounts, keys) so an injected
+// instruction cannot quote them into findings the author then reads; Codex runs in its
+// read-only sandbox (which reads the whole disk: prefer a Claude reviewer where that matters).
+// A mock runs its command with the prompt on stdin. The process gets its own group, killed
+// with the review's context, and a killed reviewer's partial output is an error, not a verdict.
+func Reviewer(id string, p config.Provider, prof config.Profile, deny []string) (func(ctx context.Context, prompt, dir string) (string, error), error) {
 	env := func(ctx context.Context) ([]string, error) {
 		vals, err := ResolveEnv(ctx, p.Env, prof)
 		if err != nil {
@@ -34,9 +41,15 @@ func Reviewer(id string, p config.Provider, prof config.Profile) (func(ctx conte
 		cmd.Dir = dir
 		cmd.Env = append(e, extra...)
 		cmd.Stdin = strings.NewReader(prompt)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+		cmd.WaitDelay = shellx.WaitDelay // a child holding stdout cannot hold the gate past it
 		var out, errb bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errb
 		err = cmd.Run()
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("%s: %w", name, ctx.Err()) // a timeout's last words are not a verdict
+		}
 		if err != nil && out.Len() == 0 {
 			return "", fmt.Errorf("%s: %w: %s", name, err, lastLine(errb.String()))
 		}
@@ -50,12 +63,10 @@ func Reviewer(id string, p config.Provider, prof config.Profile) (func(ctx conte
 	case "claude":
 		return func(ctx context.Context, prompt, dir string) (string, error) {
 			args := []string{"-p", "--output-format", "json", "--strict-mcp-config",
-				"--allowedTools", "Read,Grep,Glob",
+				"--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob",
 				"--disallowedTools", "Edit,Write,NotebookEdit,Bash,Agent,Task,Workflow,WebFetch,WebSearch",
-				"--permission-mode", "default"}
-			if p.SettingSources != "" {
-				args = append(args, "--setting-sources", p.SettingSources)
-			}
+				"--permission-mode", "default", "--setting-sources", "user", "--disable-slash-commands",
+				"--settings", WorkerSettings(Attempt{Deny: deny})}
 			if model != "" {
 				args = append(args, "--model", model)
 			}

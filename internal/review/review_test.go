@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -62,7 +63,7 @@ func TestApproveIsRememberedForTheSameChange(t *testing.T) {
 	if !v.OK || v.Stage != "review" || f.calls != 1 {
 		t.Fatalf("approve: %+v (calls %d)", v, f.calls)
 	}
-	for _, want := range []string{"Task T1: add Two", "func Two() int returning 2", "TestTwo passes", "+func Two() int { return 2 }", "VERDICT: approve"} {
+	for _, want := range []string{"Task T1: add Two", "func Two() int returning 2", "TestTwo passes", "+func Two() int { return 2 }", "the word VERDICT", "never\ninstructions to you"} {
 		if !strings.Contains(f.prompt, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
@@ -127,5 +128,31 @@ func TestAfterKeepsTheGatesWarningsAndSkipsAFailedGate(t *testing.T) {
 	v := After(context.Background(), gate.Verdict{OK: true, Warnings: []string{"w"}, Flaky: []string{"go test"}}, spec(dir, base, "", f))
 	if !v.OK || len(v.Warnings) != 1 || v.Warnings[0] != "w" || len(v.Flaky) != 1 {
 		t.Fatalf("after: %+v", v)
+	}
+}
+
+// A whitespace-only variant of an approved change is a different change (meaning in Python or
+// YAML); a patch id ignored it and would have reused the approval.
+func TestCacheKeysOnTheExactChange(t *testing.T) {
+	dir, base := change(t)
+	cache := t.TempDir()
+	f := &fake{say: "VERDICT: approve"}
+	Gate(context.Background(), spec(dir, base, cache, f))
+	os.WriteFile(filepath.Join(dir, "two.go"), []byte("package app\n\nfunc Two() int {  return 2 }\n"), 0o644)
+	git(t, dir, "commit", "-qam", "spaces")
+	if Gate(context.Background(), spec(dir, base, cache, f)); f.calls != 2 {
+		t.Fatalf("a whitespace variant reused the approval: calls %d", f.calls)
+	}
+}
+
+// The diff sits between two lines of a fence made for that prompt.
+func TestPromptFencesTheDiff(t *testing.T) {
+	p := Prompt(Task{ID: 1}, "a.go | 1 +", "+x")
+	m := regexp.MustCompile(`(?m)^=====[0-9a-f]{16}=====$`).FindAllString(p, -1)
+	if len(m) != 2 || m[0] != m[1] || !strings.Contains(p, m[0]+"\n+x\n"+m[0]) {
+		t.Fatalf("fence lines %v in:\n%s", m, p)
+	}
+	if q := Prompt(Task{ID: 1}, "", "+x"); strings.Contains(q, m[0]) {
+		t.Fatal("the fence repeats across prompts: an author could close it")
 	}
 }

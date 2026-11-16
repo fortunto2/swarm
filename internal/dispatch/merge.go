@@ -121,7 +121,7 @@ func (d *Daemon) startGates(ctx context.Context) error {
 func (d *Daemon) reviewSpec(r config.Repo, t db.Task, base, dir string) review.Spec {
 	s := review.Spec{Task: review.Task{ID: t.ID, Title: t.Title, Spec: t.Spec, Acceptance: t.Acceptance},
 		Base: base, Dir: dir, Reviewer: r.Review, Cache: filepath.Join(d.Cfg.StatePath(), "reviews")}
-	run, err := provider.Reviewer(r.Review, d.Cfg.Providers[r.Review], d.Cfg.Profile)
+	run, err := provider.Reviewer(r.Review, d.Cfg.Providers[r.Review], d.Cfg.Profile, d.Cfg.WorkerDeny())
 	if err != nil {
 		s.Run = func(context.Context, string, string) (string, error) { return "", err }
 	} else {
@@ -169,8 +169,19 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 	if err != nil || t.Status != db.Verifying || t.ResultCommit.String != r.commit {
 		return // superseded: cancelled, or resubmitted while the gate ran
 	}
+	// a repo with a reviewer whose verdict has no review stage: the gate's node did not run it
+	// (an older swarm there); passing quietly would merge an unreviewed change
+	if rp, err := d.repo(t.Repo); err == nil && rp.Review != "" && r.v.OK && r.v.Stage != "review" {
+		r.v.Warnings = append(r.v.Warnings, "review did not run: the machine that ran the gate did not run the review (upgrade its swarm)")
+	}
 	d.DB.Event(ctx, "swarmd", r.taskID, "gate_"+map[bool]string{true: "pass", false: "fail"}[r.v.OK],
 		map[string]string{"stage": r.v.Stage, "reason": r.v.Reason})
+	for _, w := range r.v.Warnings { // a configured review that did not happen is said out loud
+		if strings.HasPrefix(w, "review did not run") {
+			d.DB.Event(ctx, "swarmd", r.taskID, "review_skipped", map[string]string{"why": w})
+			d.notify(fmt.Sprintf("swarm %s: T%d %s", d.Cfg.Profile.Name, r.taskID, w))
+		}
+	}
 	if len(r.v.Warnings) > 0 {
 		d.DB.Event(ctx, "swarmd", r.taskID, "gate_warning", map[string]any{"warnings": r.v.Warnings})
 		if t, err := d.DB.GetTask(ctx, r.taskID); err == nil {
