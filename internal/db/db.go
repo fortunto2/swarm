@@ -44,6 +44,19 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs(job, id);`,
 	// 6: an agent job's cost, as its CLI estimated it
 	`ALTER TABLE job_runs ADD COLUMN cost_usd REAL;`,
+	// 7: an attempt can end 'restart': the daemon was restarted under it, which is neither
+	// the model's fault nor a crash of the worker. SQLite cannot widen a CHECK in place.
+	`CREATE TABLE attempts_new(
+	  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, provider TEXT NOT NULL, model TEXT, node TEXT,
+	  started_at INTEGER, ended_at INTEGER,
+	  outcome TEXT CHECK(outcome IN('done','gate_fail','review_fail','timeout','quota','crash','blocked','restart')),
+	  log_path TEXT, tokens_in INTEGER, tokens_out INTEGER, cost_usd REAL, pid INTEGER);
+	INSERT INTO attempts_new(id, task_id, provider, model, node, started_at, ended_at, outcome, log_path,
+	  tokens_in, tokens_out, cost_usd, pid)
+	  SELECT id, task_id, provider, model, node, started_at, ended_at, outcome, log_path,
+	  tokens_in, tokens_out, cost_usd, pid FROM attempts;
+	DROP TABLE attempts;
+	ALTER TABLE attempts_new RENAME TO attempts;`,
 }
 
 type DB struct {

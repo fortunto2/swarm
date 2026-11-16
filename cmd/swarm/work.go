@@ -395,6 +395,9 @@ func reportCmd() *cobra.Command {
 			for _, p := range r.Providers {
 				fmt.Fprintf(out, "  %-14s %3d attempts: %d done, %d gate_fail, %d timeout, %d crash, %d blocked; $%.2f\n",
 					p.Provider, p.Attempts, p.Done, p.GateFail, p.Timeout, p.Crash, p.Blocked, p.CostUSD)
+				if p.Restart > 0 { // a restart cut it off: shown apart so it never reads as a crash
+					fmt.Fprintf(out, "  %-14s %3d of them cut off by a daemon restart\n", "", p.Restart)
+				}
 			}
 			for _, g := range r.GateFails {
 				fmt.Fprintf(out, "  gate failed %dx: %s\n", g.N, g.What)

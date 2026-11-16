@@ -602,6 +602,7 @@ type ProviderReport struct {
 	GateFail int     `json:"gate_fail"`
 	Timeout  int     `json:"timeout"`
 	Crash    int     `json:"crash"`
+	Restart  int     `json:"restart"` // cut off by a daemon restart: not the model's, not a crash
 	Blocked  int     `json:"blocked"`
 	CostUSD  float64 `json:"cost_usd"`
 }
@@ -622,14 +623,14 @@ func (d *DB) Report(ctx context.Context, since int64) (Report, error) {
 	// IS, not =: a running attempt has outcome NULL, and sum() over NULLs alone is NULL.
 	rows, err := d.QueryContext(ctx, `SELECT provider, count(*),
 		sum(outcome IS 'done'), sum(outcome IS 'gate_fail'), sum(outcome IS 'timeout'), sum(outcome IS 'crash'),
-		sum(outcome IS 'blocked'), coalesce(sum(cost_usd),0)
+		sum(outcome IS 'blocked'), sum(outcome IS 'restart'), coalesce(sum(cost_usd),0)
 		FROM attempts WHERE started_at >= ? GROUP BY provider ORDER BY provider`, since)
 	if err != nil {
 		return r, err
 	}
 	for rows.Next() {
 		var p ProviderReport
-		if err := rows.Scan(&p.Provider, &p.Attempts, &p.Done, &p.GateFail, &p.Timeout, &p.Crash, &p.Blocked, &p.CostUSD); err != nil {
+		if err := rows.Scan(&p.Provider, &p.Attempts, &p.Done, &p.GateFail, &p.Timeout, &p.Crash, &p.Blocked, &p.Restart, &p.CostUSD); err != nil {
 			rows.Close()
 			return r, err
 		}

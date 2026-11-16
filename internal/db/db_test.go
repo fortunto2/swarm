@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -304,7 +305,6 @@ func TestCloseLostJobRuns(t *testing.T) {
 	}
 }
 
-
 func TestReportCountsJobRuns(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "swarm.db"))
 	if err != nil {
@@ -323,5 +323,32 @@ func TestReportCountsJobRuns(t *testing.T) {
 	}
 	if j := r.Jobs[0]; j.Runs != 4 || j.Failed != 1 || j.Skipped != 1 || j.CostUSD != 0.75 {
 		t.Fatalf("job report: %+v, want 4 runs, 1 failed, 1 skipped, $0.75", j)
+	}
+}
+
+// Migration 7 rebuilds attempts to allow 'restart': rows, pid and cost survive it.
+func TestMigrationKeepsAttemptsWhenWideningOutcome(t *testing.T) {
+	sdb, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "old.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+	if err := migrate(sdb, migrations[:7]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdb.Exec(`INSERT INTO attempts(id, task_id, provider, outcome, cost_usd, pid) VALUES(5, 1, 'p', 'crash', 1.5, 77)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(sdb, migrations); err != nil {
+		t.Fatal(err)
+	}
+	var out string
+	var cost float64
+	var pid int
+	if err := sdb.QueryRow(`SELECT outcome, cost_usd, pid FROM attempts WHERE id=5`).Scan(&out, &cost, &pid); err != nil || out != "crash" || cost != 1.5 || pid != 77 {
+		t.Fatalf("row after migration: %q %v %d (%v)", out, cost, pid, err)
+	}
+	if _, err := sdb.Exec(`INSERT INTO attempts(task_id, provider, outcome) VALUES(1, 'p', 'restart')`); err != nil {
+		t.Fatalf("restart outcome refused: %v", err)
 	}
 }

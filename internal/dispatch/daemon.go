@@ -435,7 +435,7 @@ func (d *Daemon) reconcile(ctx context.Context) error {
 	// does not know. A node still running one is told to stop it when it says hello.
 	for _, t := range running {
 		if d.DB.Move(ctx, "swarmd", t.ID, []db.Status{db.Running}, db.Ready, db.Patch{ClearLease: true}) == nil {
-			d.DB.EndAttempt(ctx, t.ID, "crash")
+			d.DB.EndAttempt(ctx, t.ID, "restart")
 			d.DB.Event(ctx, "swarmd", t.ID, "reconciled", map[string]string{"why": "daemon restarted"})
 			d.Log.Info("reconciled after restart", "task", t.ID)
 		}
