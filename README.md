@@ -183,19 +183,24 @@ example config does. Any MCP server works the same way.
 1. ~~Skeleton: config, schema, atomic claim~~
 2. ~~One provider, one worker: board, worktree, gate, ff merge~~ (scripted and live Claude runs)
    ~~Session tools: any Claude Code session queues and watches work over MCP~~
-3. Lead and task tree: decomposition, `split_task`, dependencies, file claims, batched merge queue
+3. Lead and task tree: ~~dependencies~~ (and their deliveries under `merge = "branch"`), ~~file
+   claims~~ (`swarm task claim` widens them), ~~retry with an answer~~. The lead is the calling
+   session (any Claude Code session over `swarm mcp`): it splits the work into tasks with `needs`
+   and `files`. A model lead of its own, and a batched merge queue, wait for a load that needs them
 4. ~~Several providers~~: Codex adapter (`codex exec --json`, usage limits cool the account),
    review (a gate stage, `review = "<provider>"`: another family's account where you have one), tiers
    with escalation (`limits.escalate_after`: a tier-B task that failed twice runs at tier A), a limit
    hit cools the account and the others take the work
 5. Sandbox: workers in containers with an egress allowlist; unattended overnight runs
-6. ~~`merge = "branch"`: the gated commit goes to a branch for a human to review and push~~;
-   `merge = "pr"`: the same, plus the PR description
+6. ~~`merge = "branch"`: the gated commit goes to a branch for a human to review and push~~.
+   `merge = "pr"` is not built: opening a PR means pushing to origin, which swarm never does; the
+   branch plus a person's push is that path
 7. ~~Nodes: workers on other machines, one coordinator per profile~~ (machines dial in with
    `swarm node` over ssh; runs_on labels, gates on the node, drains: docs/nodes.md)
 8. Scheduled and event work on the same daemon: ~~`script` jobs on the coordinator~~ (`[jobs.<name>]`,
    cron, recorded runs, notify on failure, drain waits for them), ~~on nodes~~ (`node = "<name>"`),
-   ~~agent jobs~~ (`prompt` on an account, its cost kept); event triggers are next
+   ~~agent jobs~~ (`prompt` on an account, its cost kept). Task events already have hooks
+   (`on_status`, `after_merge`); outside events (a webhook) are not built
 
 Deviations from the original design are logged in `docs/DEVIATIONS.md`.
 
