@@ -96,3 +96,12 @@ tools = ["symbol_search"] # code index only: session and notes search can hold p
 # reindex the repo after each merge, so the next worker's search sees the merged code
 after_merge = ["~/.solo/bin/solograph scan -p {repo} >/dev/null"]
 timeout = "2m"
+
+# Scheduled work the coordinator runs (cron, UTC). `swarm jobs` shows the next and last run.
+[jobs.nightly-index]
+cron = "15 3 * * *"
+repo = "app"
+run = "make index"
+timeout = "20m"
+notify = "fail"
+spare = true                 # skipped for the night while limits.admit holds

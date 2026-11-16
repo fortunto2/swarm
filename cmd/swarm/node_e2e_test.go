@@ -457,7 +457,6 @@ func TestGateOnANamedNode(t *testing.T) {
 	}
 }
 
-
 // The gate on a named node ends with a review by that node's account: the first change is
 // rejected there with a finding, the worker's next attempt reads it, the second merges.
 func TestReviewOnTheGateNode(t *testing.T) {

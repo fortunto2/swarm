@@ -72,6 +72,10 @@ type notesIn struct {
 	TaskID int64 `json:"task_id"`
 }
 
+type runJobIn struct {
+	Job string `json:"job" jsonschema:"the job's name in [jobs]"`
+}
+
 type retryIn struct {
 	TaskID int64  `json:"task_id"`
 	Note   string `json:"note,omitempty" jsonschema:"the answer to the worker's question, or what changed since it stopped; the next attempt reads it"`
@@ -113,6 +117,20 @@ var ops = []op{
 	def("swarm_cancel_task", "lead", "Cancel a task that will not be done; a running worker is stopped.",
 		func(s *Service, ctx context.Context, tok string, in notesIn) (any, error) {
 			return s.CancelTask(ctx, tok, in.TaskID)
+		}),
+	def("swarm_run_job", "lead", "Run one of the profile's scheduled jobs now, whatever its schedule says. `swarm jobs` lists them and their runs.",
+		func(s *Service, ctx context.Context, tok string, in runJobIn) (any, error) {
+			if _, err := s.lead(tok); err != nil {
+				return nil, err
+			}
+			if s.RunJob == nil {
+				return nil, &Error{"internal", "this daemon runs no jobs"}
+			}
+			res, err := s.RunJob(ctx, in.Job)
+			if err != nil {
+				return nil, &Error{"bad_input", err.Error()}
+			}
+			return res, nil
 		}),
 	hide(def("swarm_drain", "lead", "Finish what is in flight, start nothing new, then exit (for an upgrade). Used by `swarm drain`.",
 		func(s *Service, ctx context.Context, tok string, in drainIn) (any, error) {

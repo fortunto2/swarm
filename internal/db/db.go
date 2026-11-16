@@ -36,6 +36,12 @@ var migrations = []string{
 	// 4: step 3's CREATE was a no-op: the base schema has had a nodes table (id, state,
 	// last_seen, last_error) since phase 0. What status shows about a node goes there.
 	`ALTER TABLE nodes ADD COLUMN info TEXT NOT NULL DEFAULT '{}';`,
+	// 5: scheduled jobs: the last scheduled minute each one ran for (or was registered at, so
+	// a new job does not fire at once), and every run with its exit and output tail
+	`CREATE TABLE IF NOT EXISTS jobs(name TEXT PRIMARY KEY, last_due INTEGER NOT NULL);
+	CREATE TABLE IF NOT EXISTS job_runs(id INTEGER PRIMARY KEY, job TEXT NOT NULL, due_at INTEGER NOT NULL,
+	  started_at INTEGER NOT NULL, ended_at INTEGER, exit INTEGER, skipped TEXT, tail TEXT);
+	CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs(job, id);`,
 }
 
 type DB struct {

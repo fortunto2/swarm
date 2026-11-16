@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/fortunto2/swarm/internal/jobs"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
@@ -209,6 +211,20 @@ type Config struct {
 	MCP     map[string]MCPServer `toml:"mcp" json:"mcp,omitempty"`
 	Hooks   Hooks                `toml:"hooks" json:"hooks,omitempty"`
 	Sandbox Sandbox              `toml:"sandbox" json:"sandbox,omitempty"`
+	Jobs    map[string]Job       `toml:"jobs" json:"jobs,omitempty"`
+}
+
+// Job: a shell command the coordinator runs on a schedule (internal/jobs). Missed while the
+// daemon was down, it runs once when it is back; a new job waits for its first scheduled
+// minute. Its exit and the tail of its output are kept; a failure is told through notify.
+type Job struct {
+	Cron    string   `toml:"cron" json:"cron"`                 // five fields, UTC: "0 14,21 * * 1-5"
+	Run     string   `toml:"run" json:"run"`                   // sh -c, with the daemon's environment (the operator's command)
+	Repo    string   `toml:"repo" json:"repo,omitempty"`       // run in that repo's directory; else the profile's
+	Timeout Duration `toml:"timeout" json:"timeout,omitempty"` // default 30m: then the whole group is killed
+	Notify  string   `toml:"notify" json:"notify,omitempty"`   // fail (default) | always | never
+	// Spare: run only while limits.admit admits; held otherwise (a heavy job on a shared host).
+	Spare bool `toml:"spare" json:"spare,omitempty"`
 }
 
 var (
@@ -319,6 +335,20 @@ func (c *Config) Validate() error {
 
 	if c.Profile.Name == "" {
 		bad("profile.name is required")
+	}
+	for name, j := range c.Jobs {
+		if _, err := jobs.Parse(j.Cron); err != nil {
+			bad("jobs.%s: %v", name, err)
+		}
+		if strings.TrimSpace(j.Run) == "" {
+			bad("jobs.%s.run is empty", name)
+		}
+		if _, ok := c.Repos[j.Repo]; j.Repo != "" && !ok {
+			bad("jobs.%s.repo = %q: no such repo", name, j.Repo)
+		}
+		if !slices.Contains([]string{"", "fail", "always", "never"}, j.Notify) {
+			bad("jobs.%s.notify = %q, want fail, always or never", name, j.Notify)
+		}
 	}
 	if c.Profile.Safety != "" && c.Profile.Safety != "trusted" && c.Profile.Safety != "strict" {
 		bad("profile.safety = %q, want trusted or strict", c.Profile.Safety)

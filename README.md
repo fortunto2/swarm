@@ -141,6 +141,7 @@ same static checks and gate commands the daemon will run.
 | `[nodes.<id>]` | machines: `host = "local"` (the daemon's) or `"remote"` (dials in with `swarm node`), their accounts, labels, max workers. [docs/nodes.md](docs/nodes.md) |
 | `[mcp.<name>]` | extra read-only MCP servers for workers and the lead |
 | `[hooks]` | `after_merge` commands, e.g. reindex the repo |
+| `[jobs.<name>]` | scheduled work the coordinator runs: `cron` (five fields, UTC), `run` (sh -c, the daemon's environment), `repo` (its directory), `timeout` (30m), `notify` (fail, always, never), `spare` (skip while `limits.admit` holds). A minute missed while the daemon was down runs once when it is back; a new job waits for its first minute. `swarm jobs` lists them with their next and last run; `swarm jobs run <name>` starts one now |
 
 `swarm schema` prints the JSON Schema of the file (also in `configs/swarm.schema.json`);
 the example starts with `#:schema ./swarm.schema.json`, which TOML editors use for
@@ -192,7 +193,9 @@ example config does. Any MCP server works the same way.
    `merge = "pr"`: the same, plus the PR description
 7. ~~Nodes: workers on other machines, one coordinator per profile~~ (machines dial in with
    `swarm node` over ssh; runs_on labels, gates on the node, drains: docs/nodes.md)
-8. Scheduled and event work (`tick`, `event`, `script`) on the same queue
+8. Scheduled and event work on the same daemon: ~~`script` jobs on the coordinator~~ (`[jobs.<name>]`,
+   cron, recorded runs, notify on failure, drain waits for them); jobs on nodes, agent jobs (`tick`)
+   and event triggers are next
 
 Deviations from the original design are logged in `docs/DEVIATIONS.md`.
 

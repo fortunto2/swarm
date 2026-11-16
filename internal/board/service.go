@@ -64,6 +64,8 @@ type Service struct {
 	// Drain starts (or with cancel, stops) a drain: no new workers; the daemon exits once
 	// what is in flight is done, and its supervisor starts it again on the new binary.
 	Drain func(cancel bool) (any, error)
+	// RunJob starts a scheduled job now (`swarm jobs run`).
+	RunJob func(ctx context.Context, name string) (any, error)
 
 	mu     sync.Mutex
 	tokens map[string]Identity

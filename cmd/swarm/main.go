@@ -196,7 +196,7 @@ func main() {
 		},
 	})
 	root.AddCommand(reportCmd())
-	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd(), selftestCmd(), versionCmd(), nodeCmd(), relayCmd(), drainCmd())
+	root.AddCommand(taskCmd(), daemonCmd(), mcpCmd(), boardCmd(), gateCmd(), selftestCmd(), versionCmd(), nodeCmd(), relayCmd(), drainCmd(), jobsCmd())
 
 	if err := root.Execute(); err != nil {
 		if !errors.Is(err, errReported) {

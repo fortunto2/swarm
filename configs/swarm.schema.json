@@ -439,6 +439,39 @@
         }
       },
       "additionalProperties": false
+    },
+    "jobs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "cron": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "string",
+            "description": "a Go duration: 90s, 15m, 1h30m",
+            "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+          },
+          "notify": {
+            "type": "string"
+          },
+          "spare": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cron",
+          "run"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

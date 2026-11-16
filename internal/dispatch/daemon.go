@@ -110,6 +110,7 @@ type Daemon struct {
 	nodeEv     chan nodeEvent       // their reports, applied on the loop
 	early      map[string]nodeEvent // reports that beat their proc into d.procs (loop-owned)
 	regate     map[int64]regate     // node gates that got no verdict: not again before at
+	jobs       jobState             // scheduled jobs running now (internal/jobs)
 }
 
 // admission: may new workers and gates start on this host now (limits.admit).
@@ -196,6 +197,7 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 	d.Board.Providers = func(ctx context.Context) (any, error) { return ProviderViews(ctx, d.Cfg, d.DB) }
 	d.Board.Labels = d.Cfg.Labels
 	d.Board.Drain = d.drain
+	d.Board.RunJob = d.RunJob
 	_ = os.Remove(DrainFlag(d.Cfg.StatePath())) // a drain is one daemon's: the next one takes work
 	d.Board.Verify = d.verify
 	if d.hub != nil {
@@ -233,7 +235,7 @@ func (d *Daemon) Run(ctx context.Context, untilIdle bool) error {
 			d.waitBackground()
 			return nil
 		}
-		if d.draining.Load() && len(d.procs) == 0 && len(d.starting) == 0 && len(d.gating) == 0 {
+		if d.draining.Load() && len(d.procs) == 0 && len(d.starting) == 0 && len(d.gating) == 0 && d.jobs.count() == 0 {
 			d.Log.Info("drained: nothing in flight, exiting for a restart")
 			d.DB.Event(ctx, "swarmd", 0, "drained", nil)
 			_ = os.Remove(DrainFlag(d.Cfg.StatePath()))
@@ -284,13 +286,14 @@ func (d *Daemon) Tick(ctx context.Context) error {
 		return err
 	}
 	d.pruneHourly(ctx)
+	d.jobsTick(ctx, time.Now())
 	return d.closeRuns(ctx)
 }
 
 // idle: nothing this daemon can move on its own. Blocked tasks wait for the lead (phase 2)
 // or a person, and drafts wait on them; neither is work for the dispatcher.
 func (d *Daemon) idle(ctx context.Context) bool {
-	if len(d.procs) > 0 || len(d.starting) > 0 || len(d.gating) > 0 {
+	if len(d.procs) > 0 || len(d.starting) > 0 || len(d.gating) > 0 || d.jobs.count() > 0 {
 		return false
 	}
 	if err := d.promote(ctx); err != nil { // a merge this tick may have freed a draft

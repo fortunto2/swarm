@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type Task struct {
@@ -746,4 +748,78 @@ func (d *DB) AddClaims(ctx context.Context, taskID int64, files []string) error 
 		}
 	}
 	return nil
+}
+
+// JobDue: the last scheduled minute a job ran for (unix), and whether it is known at all.
+func (d *DB) JobDue(ctx context.Context, name string) (int64, bool, error) {
+	var due int64
+	err := d.QueryRowContext(ctx, `SELECT last_due FROM jobs WHERE name=?`, name).Scan(&due)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	return due, err == nil, err
+}
+
+// SetJobDue records the scheduled minute a job ran for (or was registered at).
+func (d *DB) SetJobDue(ctx context.Context, name string, due int64) error {
+	_, err := d.ExecContext(ctx, `INSERT INTO jobs(name, last_due) VALUES(?, ?)
+		ON CONFLICT(name) DO UPDATE SET last_due=excluded.last_due`, name, due)
+	return err
+}
+
+// StartJobRun opens a run row; skipped, when set, closes it at once with that reason.
+func (d *DB) StartJobRun(ctx context.Context, name string, due int64, skipped string) (int64, error) {
+	var sk any
+	var ended any
+	if skipped != "" {
+		sk, ended = skipped, time.Now().Unix()
+	}
+	r, err := d.ExecContext(ctx, `INSERT INTO job_runs(job, due_at, started_at, ended_at, skipped) VALUES(?, ?, unixepoch(), ?, ?)`,
+		name, due, ended, sk)
+	if err != nil {
+		return 0, err
+	}
+	return r.LastInsertId()
+}
+
+// EndJobRun closes a run with its exit code and output tail.
+func (d *DB) EndJobRun(ctx context.Context, id int64, exit int, tail string) error {
+	_, err := d.ExecContext(ctx, `UPDATE job_runs SET ended_at=unixepoch(), exit=?, tail=? WHERE id=?`, exit, tail, id)
+	return err
+}
+
+// JobRun: one run of a scheduled job.
+type JobRun struct {
+	ID        int64  `json:"id"`
+	Job       string `json:"job"`
+	DueAt     int64  `json:"due_at"`
+	StartedAt int64  `json:"started_at"`
+	EndedAt   int64  `json:"ended_at,omitempty"` // 0 while it runs
+	Exit      *int   `json:"exit,omitempty"`
+	Skipped   string `json:"skipped,omitempty"`
+	Tail      string `json:"tail,omitempty"`
+}
+
+// JobRuns: newest first, one job or all ("").
+func (d *DB) JobRuns(ctx context.Context, job string, limit int) ([]JobRun, error) {
+	rows, err := d.QueryContext(ctx, `SELECT id, job, due_at, started_at, coalesce(ended_at,0), exit, coalesce(skipped,''), coalesce(tail,'')
+		FROM job_runs WHERE ?='' OR job=? ORDER BY id DESC LIMIT ?`, job, job, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JobRun
+	for rows.Next() {
+		var r JobRun
+		var exit sql.NullInt64
+		if err := rows.Scan(&r.ID, &r.Job, &r.DueAt, &r.StartedAt, &r.EndedAt, &exit, &r.Skipped, &r.Tail); err != nil {
+			return nil, err
+		}
+		if exit.Valid {
+			e := int(exit.Int64)
+			r.Exit = &e
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
