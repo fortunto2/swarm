@@ -75,7 +75,8 @@ func Parse(expr string) (Schedule, error) {
 	if s.dow[7] {
 		s.dow[0] = true
 	}
-	s.domStar, s.dowStar = parts[2] == "*", parts[4] == "*"
+	// as Vixie cron: a day field that starts with * ("*", "*/2") counts as unrestricted
+	s.domStar, s.dowStar = strings.HasPrefix(parts[2], "*"), strings.HasPrefix(parts[4], "*")
 	return s, nil
 }
 
@@ -86,13 +87,8 @@ func (s Schedule) Matches(t time.Time) bool {
 		return false
 	}
 	dom, dow := s.dom[t.Day()], s.dow[int(t.Weekday())]
-	switch {
-	case s.domStar && s.dowStar:
-		return true
-	case s.domStar:
-		return dow
-	case s.dowStar:
-		return dom
+	if s.domStar || s.dowStar { // a starred field ("*", "*/2") constrains with AND, as Vixie
+		return dom && dow
 	}
 	return dom || dow
 }

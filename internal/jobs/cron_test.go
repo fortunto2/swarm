@@ -32,6 +32,9 @@ func TestScheduleMatches(t *testing.T) {
 		{"0 0 1 * 1", "2026-11-16 00:00 Mon", true},
 		{"0 0 1 * 1", "2026-11-17 00:00 Tue", false},
 		{"0 9 * 11 *", "2026-11-16 09:00 Mon", true},
+		{"0 0 */2 * 1", "2026-11-17 00:00 Tue", false}, // a starred step ANDs: odd days that are Mondays
+		{"0 0 */2 * 1", "2026-11-23 00:00 Mon", true},
+		{"0 0 */2 * 1", "2026-11-16 00:00 Mon", false}, // Monday, but the 16th is even
 		{"0 9 * 12 *", "2026-11-16 09:00 Mon", false},
 	}
 	for _, c := range cases {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -281,5 +282,24 @@ func TestLatestJobRunsOnePerJobWithTheLastLine(t *testing.T) {
 	r, err := d.LatestJobRuns(ctx)
 	if err != nil || len(r) != 2 || r[0].Job != "a" || r[0].Tail != "run 2" || *r[0].Exit != 2 || r[1].Job != "b" {
 		t.Fatalf("latest: %+v %v", r, err)
+	}
+}
+
+func TestCloseLostJobRuns(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	lost, _ := d.StartJobRun(ctx, "a", 1, "")
+	done, _ := d.StartJobRun(ctx, "b", 1, "")
+	_ = d.EndJobRun(ctx, done, 0, "fine")
+	if n, err := d.CloseLostJobRuns(ctx); err != nil || n != 1 {
+		t.Fatalf("closed %d (%v), want 1", n, err)
+	}
+	r, _ := d.JobRuns(ctx, "a", 1)
+	if r[0].ID != lost || r[0].EndedAt == 0 || *r[0].Exit != -1 || !strings.Contains(r[0].Tail, "without seeing this run end") {
+		t.Fatalf("lost run: %+v", r[0])
 	}
 }

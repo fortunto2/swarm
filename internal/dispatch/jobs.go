@@ -84,16 +84,25 @@ func (d *Daemon) jobsTick(ctx context.Context, now time.Time) {
 		if prev.Unix() <= last {
 			continue
 		}
-		if j.Spare && !d.admitting() {
-			_ = d.DB.SetJobDue(ctx, name, prev.Unix())
-			_, _ = d.DB.StartJobRun(ctx, name, prev.Unix(), "held: "+d.admit.why)
-			d.Log.Info("job skipped for the host", "job", name, "why", d.admit.why)
+		if j.Spare && d.Cfg.Limits.Admit != "" {
+			if !d.admit.checked {
+				continue // the first answer of limits.admit is on its way: decide then, not skip blind
+			}
+			if !d.admit.ok {
+				_ = d.DB.SetJobDue(ctx, name, prev.Unix())
+				_, _ = d.DB.StartJobRun(ctx, name, prev.Unix(), "held: "+d.admit.why)
+				d.Log.Info("job skipped for the host", "job", name, "why", d.admit.why)
+				continue
+			}
+		}
+		// the minute is taken before the start, as cron does: a run that fails to record its
+		// minute must not run again for it, and a job still running skips this one
+		if err := d.DB.SetJobDue(ctx, name, prev.Unix()); err != nil {
 			continue
 		}
-		if _, err := d.startJob(ctx, name, prev.Unix()); err != nil {
-			continue // running already: this minute is taken when it ends and the next tick sees it
+		if _, err := d.startJob(ctx, name, prev.Unix()); errors.Is(err, errJobRunning) {
+			_, _ = d.DB.StartJobRun(ctx, name, prev.Unix(), "skipped: the previous run is still going")
 		}
-		_ = d.DB.SetJobDue(ctx, name, prev.Unix())
 	}
 }
 

@@ -846,3 +846,14 @@ func (d *DB) LatestJobRuns(ctx context.Context) ([]JobRun, error) {
 	}
 	return out, nil
 }
+
+// CloseLostJobRuns: runs a previous daemon started and never saw end (it was killed, or the
+// host went down) are closed, so they stop reading as running.
+func (d *DB) CloseLostJobRuns(ctx context.Context) (int64, error) {
+	r, err := d.ExecContext(ctx, `UPDATE job_runs SET ended_at=unixepoch(), exit=-1,
+		tail=coalesce(tail,'')||'[the daemon stopped without seeing this run end]' WHERE ended_at IS NULL`)
+	if err != nil {
+		return 0, err
+	}
+	return r.RowsAffected()
+}

@@ -400,6 +400,9 @@ func (d *Daemon) locate(t db.Task) worktree.WT {
 // no attempt and no infra strike is counted. Verifying tasks need nothing: the gate map is
 // empty, so they are gated again on the first tick.
 func (d *Daemon) reconcile(ctx context.Context) error {
+	if n, err := d.DB.CloseLostJobRuns(ctx); err == nil && n > 0 {
+		d.Log.Warn("job runs a previous daemon never saw end, closed", "runs", n)
+	}
 	// Workers a crashed daemon left behind live in their own process groups: stop them
 	// before their tasks are handed to new workers in the same worktrees.
 	orphans, err := d.DB.OpenAttemptPids(ctx, d.Node)

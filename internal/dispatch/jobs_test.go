@@ -113,7 +113,30 @@ func TestSpareJobsSkipAndRunsDoNotOverlap(t *testing.T) {
 	if len(r) != 2 || !strings.Contains(r[0].Skipped, "held: a job runs") {
 		t.Fatalf("heavy: %+v", r)
 	}
-	if r := runs(t, d, "long"); len(r) != 1 {
-		t.Fatalf("long ran %d times while its first run was going", len(r))
+	r = runs(t, d, "long")
+	if len(r) != 2 || r[1].Skipped != "" || !strings.Contains(r[0].Skipped, "still going") {
+		t.Fatalf("long: %+v, want one run and the next minute skipped while it went", r)
+	}
+	d.jobsTick(ctx, utc("2026-11-16 10:02:30")) // it ended: the skipped minute is not run back-to-back
+	if r := runs(t, d, "long"); len(r) != 2 {
+		t.Fatalf("long reran for a minute it skipped: %d rows", len(r))
+	}
+}
+
+// Right after a restart limits.admit has not answered yet: a spare job waits for that
+// answer instead of recording a blind skip and losing its catch-up minute.
+func TestSpareJobWaitsForTheFirstAdmitAnswer(t *testing.T) {
+	d, _ := jobBed(t, map[string]config.Job{"heavy": {Cron: "0 3 * * *", Run: "true", Spare: true}})
+	d.Cfg.Limits.Admit = "true"
+	ctx := context.Background()
+	d.jobsTick(ctx, utc("2026-11-15 04:00:00"))
+	d.jobsTick(ctx, utc("2026-11-16 03:05:00")) // back after 03:00, admit not asked yet
+	if r := runs(t, d, "heavy"); len(r) != 0 {
+		t.Fatalf("a spare job decided before admit answered: %+v", r)
+	}
+	d.admit = admission{ok: true, checked: true}
+	d.jobsTick(ctx, utc("2026-11-16 03:05:02"))
+	if r := runs(t, d, "heavy"); len(r) != 1 || r[0].Skipped != "" || r[0].DueAt != utc("2026-11-16 03:00:00").Unix() {
+		t.Fatalf("heavy after the answer: %+v, want its 03:00 run", r)
 	}
 }
