@@ -823,3 +823,26 @@ func (d *DB) JobRuns(ctx context.Context, job string, limit int) ([]JobRun, erro
 	}
 	return out, rows.Err()
 }
+
+// LatestJobRuns: each job's newest run, its output cut to the last line (for a status view).
+func (d *DB) LatestJobRuns(ctx context.Context) ([]JobRun, error) {
+	all, err := d.JobRuns(ctx, "", 500)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []JobRun
+	for _, r := range all {
+		if seen[r.Job] {
+			continue
+		}
+		seen[r.Job] = true
+		t := strings.TrimSpace(r.Tail)
+		if i := strings.LastIndex(t, "\n"); i >= 0 {
+			t = t[i+1:]
+		}
+		r.Tail = t
+		out = append(out, r)
+	}
+	return out, nil
+}

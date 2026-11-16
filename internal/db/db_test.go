@@ -266,3 +266,20 @@ func TestRecentTasksCountsTriesAcrossARetry(t *testing.T) {
 		t.Fatalf("another task's attempts counted: %+v", got[other])
 	}
 }
+
+func TestLatestJobRunsOnePerJobWithTheLastLine(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	for i, j := range []string{"a", "b", "a"} {
+		id, _ := d.StartJobRun(ctx, j, int64(i), "")
+		_ = d.EndJobRun(ctx, id, i, fmt.Sprintf("line one\nrun %d", i))
+	}
+	r, err := d.LatestJobRuns(ctx)
+	if err != nil || len(r) != 2 || r[0].Job != "a" || r[0].Tail != "run 2" || *r[0].Exit != 2 || r[1].Job != "b" {
+		t.Fatalf("latest: %+v %v", r, err)
+	}
+}

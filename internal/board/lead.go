@@ -136,6 +136,7 @@ type StatusView struct {
 	Workers   int            `json:"attempts_running"`
 	Providers any            `json:"providers,omitempty"`
 	Nodes     any            `json:"nodes,omitempty"`
+	Jobs      []db.JobRun    `json:"jobs,omitempty"` // each scheduled job's newest run
 }
 
 func (s *Service) Status(ctx context.Context, tok string) (StatusView, error) {
@@ -154,6 +155,7 @@ func (s *Service) Status(ctx context.Context, tok string) (StatusView, error) {
 	if s.Nodes != nil {
 		v.Nodes = s.Nodes.View()
 	}
+	v.Jobs, _ = s.DB.LatestJobRuns(ctx)
 	return v, nil
 }
 
