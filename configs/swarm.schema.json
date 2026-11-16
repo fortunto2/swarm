@@ -104,6 +104,9 @@
           "gate_on": {
             "type": "string"
           },
+          "review": {
+            "type": "string"
+          },
           "remote": {
             "type": "string"
           },

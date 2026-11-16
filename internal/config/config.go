@@ -66,6 +66,10 @@ type Repo struct {
 	// on that node while it is connected and has the repo, whoever made the commit, else here
 	// (a box's tasks gated on a laptop's cores, measured 2 min there against 15-25 here).
 	GateOn string `toml:"gate_on" json:"gate_on,omitempty"`
+	// Review: a provider that reads each change after the gate's commands pass, read-only, and
+	// approves or rejects it (internal/review). It runs where the gate runs, on that machine's
+	// account of that id. "" = no review.
+	Review string `toml:"review" json:"review,omitempty"`
 
 	// Node profiles only: how this node keeps its copy in step with the coordinator's.
 	Remote  string    `toml:"remote" json:"remote,omitempty"`   // git URL of the coordinator's copy, as this node reaches it
@@ -334,6 +338,17 @@ func (c *Config) Validate() error {
 		}
 		if r.GateOn != "" && r.GateOn != "coordinator" && r.GateOn != "node" && c.Nodes[r.GateOn].Host != "remote" {
 			bad("repos.%s.gate_on = %q, want coordinator, node, or the name of a remote node", n, r.GateOn)
+		}
+		if r.Review != "" {
+			if p, ok := c.Providers[r.Review]; !ok {
+				bad("repos.%s.review = %q: no such provider", n, r.Review)
+			} else if p.Kind != "claude" && p.Kind != "codex" && p.Kind != "mock" {
+				bad("repos.%s.review = %q: kind %q cannot review", n, r.Review, p.Kind)
+			}
+			// a gate on a named node reviews with that node's account of this id
+			if g, ok := c.Nodes[r.GateOn]; ok && g.Host == "remote" && !slices.Contains(g.Accounts, r.Review) {
+				bad("repos.%s.review = %q: its gate runs on node %s, which has no such account (add it to nodes.%s.accounts)", n, r.Review, r.GateOn, r.GateOn)
+			}
 		}
 		if r.Remote != "" || len(r.Publish) > 0 || r.Fetch != "" || r.Land != "" {
 			bad("repos.%s: remote, publish, fetch and land belong in a node profile ([node]), not the coordinator's", n)

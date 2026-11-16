@@ -10,7 +10,7 @@ Each line: what the PRD says, what was done, why.
 - §6 worker shell access: besides MCP, `swarm board done|blocked|task` talks to the board from a worker's shell (env SWARM_SOCKET, SWARM_TOKEN). Scripted workers and debugging need it; identity is the same token.
 - §5 socket: `/tmp/swarm-<uid>/<hash(state_dir)>.sock`, not `<repo>/.swarm/swarmd.sock`: a unix socket path is capped near 104 bytes and profile paths exceed it.
 - §7 infra failures: a task the infrastructure fails 3 times goes to `blocked` instead of cycling forever (PRD sets no cap).
-- §9 review: phase 1 sends a green gate straight to the merge queue; cross-family review arrives with several providers (phase 4).
+- §9 review: a stage of the gate (`internal/review`), not a reviewer attempt scheduled on its own: it runs where the gate runs (a node included), on that machine's account named by `review`, and its rejection is a gate failure the next attempt reads. The `review` status stays unused. Family crossing is the operator's choice of account, not enforced: on the first day the second readers that found real bugs were the same family as the authors.
 - extra: `[mcp.<name>]` extra MCP servers for agents and `[hooks] after_merge`, so a code/session index (solograph) can serve workers and be refreshed after every merge, without the core knowing its name.
 - §8 permissions without a sandbox: `--allowedTools` derived from the board, extra MCP servers, git on the own branch (no push) and the first word of each gate command; `allowed_tools` in the provider adds more.
 - §8 worker settings: the operator's user-level hooks/skills load in workers by default (they help); `setting_sources` narrows it per provider.

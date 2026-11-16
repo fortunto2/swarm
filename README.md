@@ -136,7 +136,7 @@ same static checks and gate commands the daemon will run.
 | Section | What |
 |---|---|
 | `[profile]` | name, `worktree_root` (must be outside every repo), `state_dir`, `notify`, `secret_cmd` |
-| `[repos.<name>]` | path, `gate` commands, `merge = "ff"` or `"branch"`, `gate_on = "node"` (where the work was done) or a node's name (where the cores are) |
+| `[repos.<name>]` | path, `gate` commands, `merge = "ff"` or `"branch"`, `gate_on = "node"` (where the work was done) or a node's name (where the cores are), `review = "<provider>"`: after the gate's commands pass, that account reads the task and the diff read-only and approves or rejects (its findings go to the next attempt; a review that cannot run passes with a warning; an approval is remembered by patch id) |
 | `[providers.<id>]` | `kind` (claude, codex, mock), `family` (review crosses families), slots, tiers, models, env. A codex account is its `home` (CODEX_HOME). Its worker follows `[profile.sandbox]` like a Claude one: off, unconfined; on, Codex's `workspace-write` with the repo's `.git` and `allow_write` writable. Not under `safety = "strict"` yet |
 | `[nodes.<id>]` | machines: `host = "local"` (the daemon's) or `"remote"` (dials in with `swarm node`), their accounts, labels, max workers. [docs/nodes.md](docs/nodes.md) |
 | `[mcp.<name>]` | extra read-only MCP servers for workers and the lead |
@@ -183,8 +183,9 @@ example config does. Any MCP server works the same way.
 2. ~~One provider, one worker: board, worktree, gate, ff merge~~ (scripted and live Claude runs)
    ~~Session tools: any Claude Code session queues and watches work over MCP~~
 3. Lead and task tree: decomposition, `split_task`, dependencies, file claims, batched merge queue
-4. Several providers: ~~Codex adapter~~ (`codex exec --json`, usage limits cool the account), tiers,
-   cross-family review, rate-limit failover
+4. Several providers: ~~Codex adapter~~ (`codex exec --json`, usage limits cool the account),
+   ~~review~~ (a gate stage, `review = "<provider>"`: another family's account where you have one), tiers,
+   rate-limit failover
 5. Sandbox: workers in containers with an egress allowlist; unattended overnight runs
 6. ~~`merge = "branch"`: the gated commit goes to a branch for a human to review and push~~;
    `merge = "pr"`: the same, plus the PR description

@@ -35,6 +35,7 @@ import (
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
 	"github.com/fortunto2/swarm/internal/provider"
+	"github.com/fortunto2/swarm/internal/review"
 	"github.com/fortunto2/swarm/internal/shellx"
 	"github.com/fortunto2/swarm/internal/worktree"
 )
@@ -732,7 +733,21 @@ func (n *Node) gate(ctx context.Context, c board.NodeCmd) {
 	}
 	defer func() { _, _ = gitx.Run(context.WithoutCancel(ctx), r.Path, "worktree", "remove", "--force", dir) }()
 	n.Log.Info("gate started", "task", c.Task, "commit", c.Commit)
-	verdict(gate.Run(ctx, dir, v.Gate, v.GateTimeout.Duration, v.Reruns))
+	vd := gate.Run(ctx, dir, v.Gate, v.GateTimeout.Duration, v.Reruns)
+	if v.Review != "" && c.Base != "" {
+		s := review.Spec{Task: review.Task{ID: c.Task, Title: c.Title, Spec: c.Spec, Acceptance: c.Acceptance},
+			Base: c.Base, Dir: dir, Reviewer: v.Review, Cache: filepath.Join(n.Cfg.StatePath(), "reviews")}
+		n.mu.Lock()
+		p := n.welcome.Providers[v.Review]
+		n.mu.Unlock()
+		if run, err := provider.Reviewer(v.Review, p, n.Cfg.Profile); err != nil {
+			s.Run = func(context.Context, string, string) (string, error) { return "", err }
+		} else {
+			s.Run = run
+		}
+		vd = review.After(ctx, vd, s)
+	}
+	verdict(vd)
 }
 
 // statusHooks runs this node's hooks.on_status for a task of its own: {task} {status}

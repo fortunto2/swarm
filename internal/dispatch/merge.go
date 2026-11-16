@@ -13,6 +13,8 @@ import (
 	"github.com/fortunto2/swarm/internal/db"
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
+	"github.com/fortunto2/swarm/internal/provider"
+	"github.com/fortunto2/swarm/internal/review"
 	"github.com/fortunto2/swarm/internal/shellx"
 	"github.com/fortunto2/swarm/internal/taskbase"
 	"github.com/fortunto2/swarm/internal/worktree"
@@ -84,12 +86,21 @@ func (d *Daemon) startGates(ctx context.Context) error {
 			defer cancel()
 			v := gate.StaticFrom(gctx, r.Path, []string{base, task.Base.String}, commit, claims, grants)
 			if v.OK && node != "" {
-				nv, ok, why := d.hub.gateOn(gctx, node, task, commit, r.GateTimeout.Duration+5*time.Minute)
+				limit := r.GateTimeout.Duration + 5*time.Minute
+				if r.Review != "" {
+					limit += review.Timeout
+				}
+				nv, ok, why := d.hub.gateOn(gctx, node, task, commit, base, limit)
 				d.results <- gateResult{taskID: id, commit: commit, v: nv, again: !ok, why: why}
 				return
 			}
 			if v.OK {
-				v = runGate(gctx, r, dir, commit)
+				v = runGate(gctx, r, dir, commit, func(dir string, v gate.Verdict) gate.Verdict {
+					if r.Review == "" {
+						return v
+					}
+					return review.After(gctx, v, d.reviewSpec(r, task, base, dir))
+				})
 			}
 			d.results <- gateResult{taskID: id, commit: commit, v: v}
 		}()
@@ -105,7 +116,21 @@ func (d *Daemon) startGates(ctx context.Context) error {
 // runGate checks the submitted commit in a throwaway detached worktree: the worker's own
 // checkout (its untracked files, its build output, its HEAD) is never touched, and a
 // re-gate after a rebase is the same operation.
-func runGate(ctx context.Context, r config.Repo, dir, commit string) gate.Verdict {
+// reviewSpec: the review stage as this machine runs it, with this profile's account of the
+// repo's reviewer.
+func (d *Daemon) reviewSpec(r config.Repo, t db.Task, base, dir string) review.Spec {
+	s := review.Spec{Task: review.Task{ID: t.ID, Title: t.Title, Spec: t.Spec, Acceptance: t.Acceptance},
+		Base: base, Dir: dir, Reviewer: r.Review, Cache: filepath.Join(d.Cfg.StatePath(), "reviews")}
+	run, err := provider.Reviewer(r.Review, d.Cfg.Providers[r.Review], d.Cfg.Profile)
+	if err != nil {
+		s.Run = func(context.Context, string, string) (string, error) { return "", err }
+	} else {
+		s.Run = run
+	}
+	return s
+}
+
+func runGate(ctx context.Context, r config.Repo, dir, commit string, after func(string, gate.Verdict) gate.Verdict) gate.Verdict {
 	// a gate killed with the daemon leaves its worktree behind; clear it, or this check fails
 	_, _ = gitx.Run(ctx, r.Path, "worktree", "remove", "--force", dir)
 	_ = os.RemoveAll(dir)
@@ -114,7 +139,7 @@ func runGate(ctx context.Context, r config.Repo, dir, commit string) gate.Verdic
 		return gate.Verdict{Stage: "gate", Reason: "could not check out the submitted commit", Tail: err.Error()}
 	}
 	defer func() { _, _ = gitx.Run(context.WithoutCancel(ctx), r.Path, "worktree", "remove", "--force", dir) }()
-	return gate.Run(ctx, dir, r.Gate, r.GateTimeout.Duration, r.Reruns())
+	return after(dir, gate.Run(ctx, dir, r.Gate, r.GateTimeout.Duration, r.Reruns()))
 }
 
 func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
@@ -164,10 +189,14 @@ func (d *Daemon) applyGate(ctx context.Context, r gateResult) {
 			detail = "this was your commit rebased by the daemon onto the current main; it fails there, " +
 				"so rebase your branch onto main and fix it against the new code.\n" + detail
 		}
-		d.fail(ctx, r.taskID, db.Verifying, modelFail, "gate_fail", detail)
+		outcome := "gate_fail"
+		if r.v.Stage == "review" {
+			outcome = "review_fail"
+		}
+		d.fail(ctx, r.taskID, db.Verifying, modelFail, outcome, detail)
 		return
 	}
-	// Cross-family review lands in phase 4; until then a green gate goes straight to the queue.
+	// The review, when the repo has one, is the gate's last stage (internal/review).
 	if err := d.DB.Move(ctx, "swarmd", r.taskID, []db.Status{db.Verifying}, db.Merging, db.Patch{}); err != nil {
 		return
 	}

@@ -56,6 +56,7 @@ type RepoView struct {
 	Gate        []string        `json:"gate"`
 	GateTimeout config.Duration `json:"gate_timeout"`
 	Reruns      int             `json:"reruns"`
+	Review      string          `json:"review,omitempty"` // the reviewer provider's id: the gate ends with its review
 }
 
 // NodeWelcome: the session, this node's accounts as declared by the coordinator (their
@@ -115,6 +116,9 @@ type NodeCmd struct {
 	// Base is not the coordinator's main (main joined with dependencies' deliveries).
 	Commit string `json:"commit,omitempty"`
 	Ref    string `json:"ref,omitempty"`
+	// gate with a review: what the task asked, for the reviewer; Base is where its diff starts
+	Spec       string `json:"spec,omitempty"`
+	Acceptance string `json:"acceptance,omitempty"`
 
 	// status: the task moved; the node runs its own hooks.on_status (a board, a card)
 	Status string `json:"status,omitempty"`

@@ -452,3 +452,61 @@ func TestGateOnANamedNode(t *testing.T) {
 		t.Fatalf("the gate of a task run here did not go to the named node: %s", g)
 	}
 }
+
+
+// The gate on a named node ends with a review by that node's account: the first change is
+// rejected there with a finding, the worker's next attempt reads it, the second merges.
+func TestReviewOnTheGateNode(t *testing.T) {
+	coord, nodeProf, repo, _ := nodeBed(t, "exit 1\n", "n1", "")
+	marks := t.TempDir()
+	reviewer := filepath.Join(marks, "reviewer.sh")
+	if err := os.WriteFile(reviewer, []byte(fmt.Sprintf(`#!/bin/sh
+cat > %[1]q/prompt.$$
+if [ ! -f %[1]q/rejected ]; then touch %[1]q/rejected; printf 'two.go:1: wrong\nVERDICT: reject\n'; else printf 'VERDICT: approve\n'; fi
+`, marks)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	here := "printf 'package app\\n\\nfunc Two() int { return 2 }\\n' > two.go\n" +
+		"printf 'package app\\n\\nimport \"testing\"\\n\\nfunc TestTwo(t *testing.T) { if Two() != 2 { t.Fatal() } }\\n' > two_test.go\n" +
+		"git add -A && git commit -qm \"T$SWARM_TASK_ID: add Two\" --allow-empty\nswarm board done \"$(git rev-parse HEAD)\"\n"
+	if err := os.WriteFile(filepath.Join(coord, "here.sh"), []byte("#!/bin/sh\nset -e\n"+here), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(coord, "swarm.toml"))
+	s := strings.Replace(string(b), `gate_on = "n1"`, "gate_on = \"n1\"\nreview = \"rev\"", 1)
+	s = strings.Replace(s, `accounts = ["mock"]`, `accounts = ["mock", "rev"]`, 1)
+	s += fmt.Sprintf("\n[providers.here]\nkind = \"mock\"\nfamily = \"mock\"\nslots = 1\npriority = -1\ncommand = [%q]\n", filepath.Join(coord, "here.sh"))
+	s += fmt.Sprintf("\n[providers.rev]\nkind = \"mock\"\nfamily = \"other\"\nroles = [\"reviewer\"]\nslots = 1\ncommand = [%q]\n", reviewer)
+	if err := os.WriteFile(filepath.Join(coord, "swarm.toml"), []byte(s), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := swarm(t, coord, 30*time.Second, "init"); err != nil {
+		t.Fatalf("init: %v %s", err, out)
+	}
+	daemon := exec.Command(bin, "--profile", coord, "daemon")
+	var dlog bytes.Buffer
+	daemon.Stdout, daemon.Stderr = &dlog, &dlog
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() })
+	_, nlog := startNode(t, nodeProf)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("status:\n%s\ndaemon:\n%s\nnode:\n%s", status(t, coord), dlog.String(), nlog.String())
+		}
+	})
+	waitFor(t, 30*time.Second, func() bool { return strings.Contains(status(t, coord), " online") }, "the node never connected")
+	before := sh(t, repo, "git rev-parse main")
+	addTask(t, coord, "two.go,two_test.go")
+	waitFor(t, 4*time.Minute, func() bool { return strings.Contains(status(t, coord), "merged       1") }, "not merged")
+	if sh(t, repo, "git rev-parse main") == before {
+		t.Fatal("main did not move")
+	}
+	if prompts, _ := filepath.Glob(filepath.Join(marks, "prompt.*")); len(prompts) != 2 {
+		t.Fatalf("the node's reviewer ran %d times, want 2", len(prompts))
+	}
+	if n := sqlite(t, coord, "SELECT count(*) FROM events WHERE task_id=1 AND type='model_fail' AND data LIKE '%review_fail%'"); n != "1" {
+		t.Fatalf("review_fail events = %s, want 1", n)
+	}
+}

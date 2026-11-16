@@ -129,7 +129,7 @@ func (h *hub) Hello(ctx context.Context, in board.NodeHello) (board.NodeWelcome,
 		}
 		repos[name] = true
 		w.Repos[name] = board.RepoView{MainRef: r.MainRef(), Merge: r.Merge, Prefix: r.BranchPrefix, Gate: r.Gate,
-			GateTimeout: r.GateTimeout, Reruns: r.Reruns()}
+			GateTimeout: r.GateTimeout, Reruns: r.Reruns(), Review: r.Review}
 	}
 	for _, ref := range in.Worktrees {
 		t, err := h.d.DB.GetTask(ctx, ref.Task)
@@ -444,7 +444,7 @@ func (h *hub) pushBranch(ctx context.Context, node string, t db.Task) error {
 
 // gateOn runs a gate on a node and waits for its verdict; ok is false when the node could
 // not be reached in time, and the caller runs the gate here instead.
-func (h *hub) gateOn(ctx context.Context, node string, t db.Task, commit string, limit time.Duration) (gate.Verdict, bool, string) {
+func (h *hub) gateOn(ctx context.Context, node string, t db.Task, commit, base string, limit time.Duration) (gate.Verdict, bool, string) {
 	r, err := h.d.repo(t.Repo)
 	if err != nil {
 		return gate.Verdict{}, false, err.Error()
@@ -457,7 +457,11 @@ func (h *hub) gateOn(ctx context.Context, node string, t db.Task, commit string,
 	h.mu.Lock()
 	h.gates[t.ID] = gateWait{commit: commit, ch: ch}
 	h.mu.Unlock()
-	h.order(node, board.NodeCmd{Kind: "gate", Task: t.ID, Repo: t.Repo, Commit: commit, Ref: ref})
+	c := board.NodeCmd{Kind: "gate", Task: t.ID, Repo: t.Repo, Commit: commit, Ref: ref}
+	if r.Review != "" { // the node's account reads it: it needs what was asked and where the diff starts
+		c.Base, c.Title, c.Spec, c.Acceptance = base, t.Title, t.Spec, t.Acceptance
+	}
+	h.order(node, c)
 	defer func() {
 		h.mu.Lock()
 		delete(h.gates, t.ID)
