@@ -73,3 +73,24 @@ func TestPrevAndNext(t *testing.T) {
 		t.Fatalf("next over a weekend = %v", n)
 	}
 }
+
+// Any text either fails to parse or gives a schedule whose Prev and Next agree with Matches:
+// a config typo must never panic the daemon at load, and a schedule must never skip itself.
+func FuzzParse(f *testing.F) {
+	for _, s := range []string{"0 14,21 * * 1-5", "*/15 * * * *", "5/20 * * * *", "0 0 */2 * 1", "* * * * 7", "1-5/2 0 1,15 * *"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, expr string) {
+		s, err := Parse(expr)
+		if err != nil {
+			return
+		}
+		now := time.Date(2026, 11, 16, 12, 34, 0, 0, time.UTC)
+		if p := s.Prev(now); !p.IsZero() && (!s.Matches(p) || p.After(now)) {
+			t.Fatalf("%q: Prev(%v) = %v does not match or is after now", expr, now, p)
+		}
+		if n := s.Next(now); !n.IsZero() && (!s.Matches(n) || !n.After(now)) {
+			t.Fatalf("%q: Next(%v) = %v does not match or is not after now", expr, now, n)
+		}
+	})
+}
