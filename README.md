@@ -137,7 +137,7 @@ same static checks and gate commands the daemon will run.
 |---|---|
 | `[profile]` | name, `worktree_root` (must be outside every repo), `state_dir`, `notify`, `secret_cmd` |
 | `[repos.<name>]` | path, `gate` commands, `merge = "ff"` or `"branch"`, `gate_on = "node"` (where the work was done) or a node's name (where the cores are) |
-| `[providers.<id>]` | `kind` (claude, codex, mock), `family` (review crosses families), slots, tiers, models, env. A codex account is its `home` (CODEX_HOME); its worker runs in Codex's own `workspace-write` sandbox with the repo's `.git` writable, network on unless `safety = "strict"` |
+| `[providers.<id>]` | `kind` (claude, codex, mock), `family` (review crosses families), slots, tiers, models, env. A codex account is its `home` (CODEX_HOME). Its worker follows `[profile.sandbox]` like a Claude one: off, unconfined; on, Codex's `workspace-write` with the repo's `.git` and `allow_write` writable. Not under `safety = "strict"` yet |
 | `[nodes.<id>]` | machines: `host = "local"` (the daemon's) or `"remote"` (dials in with `swarm node`), their accounts, labels, max workers. [docs/nodes.md](docs/nodes.md) |
 | `[mcp.<name>]` | extra read-only MCP servers for workers and the lead |
 | `[hooks]` | `after_merge` commands, e.g. reindex the repo |

@@ -458,6 +458,24 @@ func authText(s string) bool {
 	return slices.ContainsFunc(authPatterns, func(p string) bool { return strings.Contains(s, p) })
 }
 
+// codexAgain: Codex's usage-limit message says when, as "try again in 2 days 3 hours" (a weekly
+// limit) or minutes; without it the five-hour fallback would retry a weekly limit too soon.
+var codexAgain = regexp.MustCompile(`(?i)try again in\s+(?:(\d+)\s*days?)?[\s,]*(?:and\s+)?(?:(\d+)\s*hours?)?[\s,]*(?:and\s+)?(?:(\d+)\s*min(?:ute)?s?)?`)
+
+// codexReset: when a Codex limit message says the account is back; 0 when it is no limit.
+func codexReset(msg string, now time.Time) int64 {
+	if !limitAny.MatchString(msg) {
+		return 0
+	}
+	if m := codexAgain.FindStringSubmatch(msg); m != nil {
+		n := func(s string) time.Duration { v, _ := strconv.Atoi(s); return time.Duration(v) }
+		if d := n(m[1])*24*time.Hour + n(m[2])*time.Hour + n(m[3])*time.Minute; d > 0 {
+			return now.Add(d).Unix()
+		}
+	}
+	return LimitReset(msg, now)
+}
+
 // parseCodex reads `codex exec --json`: a turn.completed event carries the token counts
 // (input includes cached input; the CLI reports no cost), turn.failed and error events the
 // reason. The account's limit reads "You've hit your usage limit", which limitAny matches.
@@ -489,7 +507,7 @@ func parseCodex(lines []string, r Result) Result {
 			// not logged in, measured on codex-cli 0.147 with an empty CODEX_HOME: "unexpected
 			// status 401 Unauthorized: Missing bearer or basic authentication in header"
 			r.AuthFailed = r.AuthFailed || authText(msg) || strings.Contains(msg, "401 Unauthorized")
-			if until := LimitReset(msg, time.Now()); until > 0 {
+			if until := codexReset(msg, time.Now()); until > 0 {
 				r.LimitedUntil = until
 			}
 		}

@@ -23,7 +23,7 @@ echo "$@" > %[1]q/argv
 cat > %[1]q/prompt
 echo "$CODEX_HOME" > %[1]q/home
 [ -n "$SWARM_TOKEN" ] || { echo '{"type":"turn.failed","error":{"message":"no token"}}'; exit 1; }
-case "$*" in *"exec --json --sandbox workspace-write -C $SWARM_WORKTREE"*) ;; *) echo bad argv >&2; exit 1;; esac
+case "$*" in *"exec --json -C $SWARM_WORKTREE"*) ;; *) echo bad argv >&2; exit 1;; esac
 `+goodWorker+`
 echo '{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":30}}'
 `, marks)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,12 @@ func TestCodexCommand(t *testing.T) {
 	repo, wt := worktreeOf(t)
 	a := Attempt{TaskID: 1, Worktree: wt, Dir: t.TempDir(), Prompt: "do the task", Model: "gpt-5.5-codex",
 		Socket: "/run/swarm.sock", Token: "tok-secret", SwarmBin: "/opt/swarm",
-		ExtraMCP: map[string]config.MCPServer{"index": {Command: "/opt/idx", Args: []string{"serve"}, Env: map[string]string{"IDX_ROOT": "/r"}}}}
+		ExtraMCP: map[string]config.MCPServer{"my.index": {Command: "/opt/idx", Args: []string{"serve"}, Env: map[string]string{"IDX_ROOT": "/r"}}}}
+	t.Setenv("OPENAI_API_KEY", "sk-should-not-reach-the-shell") // an account var: envx drops it outright
+	t.Setenv("BILLING_WEBHOOK_SECRET", "whsec-should-not-reach-the-shell")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.autocrlf")
+	t.Setenv("GIT_CONFIG_VALUE_0", "false")
 	ad, err := New("codex-me", config.Provider{Kind: "codex", Home: "/accounts/codex-me"}, config.Profile{})
 	if err != nil {
 		t.Fatal(err)
@@ -42,32 +48,38 @@ func TestCodexCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	argv := strings.Join(cmd.Args, " ")
-	common, _ := filepath.EvalSymlinks(filepath.Join(repo, ".git"))
 	for _, want := range []string{
-		"codex exec --json --sandbox workspace-write -C " + wt,
+		"codex exec --json -C " + wt,
 		`approval_policy="never"`,
-		"sandbox_workspace_write.network_access=true",
+		"--sandbox danger-full-access", // trusted: unconfined, as a trusted Claude worker's Bash
 		`mcp_servers.board.command="/opt/swarm"`,
 		`mcp_servers.board.args=["mcp","--socket","/run/swarm.sock"]`,
 		`mcp_servers.board.env_vars=["SWARM_TOKEN"]`,
-		`mcp_servers.index.env_vars=["IDX_ROOT"]`,
+		`mcp_servers."my.index".env_vars=["IDX_ROOT"]`, // a dotted name stays one key
+		"shell_environment_policy.ignore_default_excludes=true",
 		"-m gpt-5.5-codex",
 	} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("argv lacks %q:\n%s", want, argv)
 		}
 	}
-	gotCommon := ""
+	var exclude string
 	for i, s := range cmd.Args {
-		if s == "--add-dir" && i+1 < len(cmd.Args) {
-			gotCommon, _ = filepath.EvalSymlinks(cmd.Args[i+1])
+		if strings.HasPrefix(s, "shell_environment_policy.exclude=") && cmd.Args[i-1] == "-c" {
+			exclude = s
 		}
 	}
-	if gotCommon != common {
-		t.Errorf("--add-dir %q, want the repo's shared .git %q (a worktree commits there)", gotCommon, common)
+	if !strings.Contains(exclude, `"BILLING_WEBHOOK_SECRET"`) || strings.Contains(exclude, "GIT_CONFIG_KEY_0") {
+		t.Errorf("shell exclude %q: want the secret out and git's GIT_CONFIG_KEY_n kept (git fails without it)", exclude)
 	}
-	if strings.Contains(argv, "tok-secret") || strings.Contains(argv, "do the task") {
-		t.Fatalf("the token or the prompt is in argv, which ps shows to anyone:\n%s", argv)
+	if strings.Contains(strings.Join(cmd.Env, "\n"), "sk-should-not") {
+		t.Error("an account key reached the worker's environment")
+	}
+	if !strings.Contains(exclude, `"IDX_ROOT"`) || strings.Contains(exclude, "SWARM_TOKEN") {
+		t.Errorf("shell exclude %q: want the MCP server's env out and SWARM_TOKEN in (swarm gate needs it)", exclude)
+	}
+	if strings.Contains(argv, "tok-secret") || strings.Contains(argv, "do the task") || strings.Contains(argv, "should-not-reach") {
+		t.Fatalf("a token, a key or the prompt is in argv, which ps shows to anyone:\n%s", argv)
 	}
 	if cmd.Args[len(cmd.Args)-1] != "-" {
 		t.Fatalf("the prompt must come from stdin: last arg %q", cmd.Args[len(cmd.Args)-1])
@@ -82,13 +94,33 @@ func TestCodexCommand(t *testing.T) {
 		}
 	}
 
-	a.Strict = true
+	// sandbox on: workspace-write, the shared .git and allow_write writable, network on
+	on := true
+	a.Sandbox = config.Sandbox{Enabled: &on, AllowWrite: []string{"/caches/go-build"}}
 	cmd, err = ad.Command(context.Background(), a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(strings.Join(cmd.Args, " "), "network_access=true") {
-		t.Fatal("strict: a codex worker reached the network")
+	argv = strings.Join(cmd.Args, " ")
+	common, _ := filepath.EvalSymlinks(filepath.Join(repo, ".git"))
+	var dirs []string
+	for i, s := range cmd.Args {
+		if s == "--add-dir" {
+			d, _ := filepath.EvalSymlinks(cmd.Args[i+1])
+			if d == "" {
+				d = cmd.Args[i+1]
+			}
+			dirs = append(dirs, d)
+		}
+	}
+	if !strings.Contains(argv, "--sandbox workspace-write") || !strings.Contains(argv, "network_access=true") ||
+		!slices.Contains(dirs, common) || !slices.Contains(dirs, "/caches/go-build") {
+		t.Fatalf("sandbox on: argv %s\nwritable %v, want the shared .git %s and the cache", argv, dirs, common)
+	}
+
+	a.Strict = true
+	if _, err := ad.Command(context.Background(), a); err == nil || !strings.Contains(err.Error(), "strict") {
+		t.Fatalf("strict: err = %v, want a refusal", err)
 	}
 }
 
@@ -115,6 +147,11 @@ func TestParseResultReadsCodexEvents(t *testing.T) {
 	r := ParseResult(limited)
 	if !r.Known || r.LimitedUntil < time.Now().Add(4*time.Hour).Unix() {
 		t.Fatalf("usage limit: %+v, want the account cooled for hours", r)
+	}
+	weekly := `{"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro, or try again in 2 days 3 hours 10 minutes."}}`
+	want := time.Now().Add(51*time.Hour + 10*time.Minute).Unix()
+	if r := ParseResult(weekly); r.LimitedUntil < want-60 || r.LimitedUntil > want+60 {
+		t.Fatalf("weekly limit cooled until %d, want about %d (in 2 days 3 hours 10 minutes)", r.LimitedUntil, want)
 	}
 	// the real words, codex-cli 0.147 with an empty CODEX_HOME
 	notLoggedIn := `{"type":"thread.started","thread_id":"x"}
