@@ -464,6 +464,9 @@
           },
           "spare": {
             "type": "boolean"
+          },
+          "node": {
+            "type": "string"
           }
         },
         "required": [

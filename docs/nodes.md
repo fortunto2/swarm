@@ -143,7 +143,15 @@ such a start with "base ... is not on the coordinator's main".
 A hello carries `board.NodeProtocol`. The coordinator places new work only on a node that
 speaks its protocol or a later one; an older node keeps its running attempts and gates, and
 `swarm status` shows it holding with "upgrade this node's swarm". Bump the constant when an
-order gains a field an older node would silently ignore (2: a start's base ref).
+order gains a field an older node would silently ignore (2: a start's base ref; 3: job orders).
+
+## Jobs on a node
+
+`[jobs.<name>] node = "<name>"`: the coordinator orders the job to that node when its minute
+comes and the node is connected (protocol 3 or later); the node runs it in its own copy of the
+job's repo with its own environment and reports exit and output tail. A node that is away keeps
+the minute waiting, so the job runs once when it is back. A run with no report by the job's
+timeout plus five minutes is closed as lost (exit -1) and told.
 
 ## Out of step while the link holds
 

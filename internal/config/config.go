@@ -225,6 +225,9 @@ type Job struct {
 	Notify  string   `toml:"notify" json:"notify,omitempty"`   // fail (default) | always | never
 	// Spare: run only while limits.admit admits; held otherwise (a heavy job on a shared host).
 	Spare bool `toml:"spare" json:"spare,omitempty"`
+	// Node: a remote node runs it (its copy of repo, its environment). While that node is
+	// away the job waits, and runs once when it is back.
+	Node string `toml:"node" json:"node,omitempty"`
 }
 
 var (
@@ -348,6 +351,9 @@ func (c *Config) Validate() error {
 		}
 		if !slices.Contains([]string{"", "fail", "always", "never"}, j.Notify) {
 			bad("jobs.%s.notify = %q, want fail, always or never", name, j.Notify)
+		}
+		if j.Node != "" && c.Nodes[j.Node].Host != "remote" {
+			bad("jobs.%s.node = %q: not a remote node of this profile", name, j.Node)
 		}
 	}
 	if c.Profile.Safety != "" && c.Profile.Safety != "trusted" && c.Profile.Safety != "strict" {

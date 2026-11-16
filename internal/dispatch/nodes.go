@@ -271,6 +271,10 @@ func (h *hub) Report(ctx context.Context, in board.NodeReport) error {
 		return nil
 	}
 	h.mu.Unlock()
+	if in.Kind == "job" {
+		h.d.remoteJobDone(ctx, name, in)
+		return nil
+	}
 	if in.Kind != "started" && in.Kind != "exited" && in.Kind != "failed" {
 		return &board.Error{Code: "bad_input", Hint: "report kind " + in.Kind + " is not started, exited, failed, pushed, gate or gate_error"}
 	}
@@ -386,6 +390,22 @@ func (h *hub) forget(worker string) {
 	h.mu.Lock()
 	delete(h.expect, worker)
 	h.mu.Unlock()
+}
+
+// jobNode: may a job be ordered to this node now (connected, and speaking job orders), and
+// does its own limits.admit admit. A profile without nodes has no hub: never.
+func (h *hub) jobNode(node string) (online, admitting bool) {
+	if h == nil {
+		return false, false
+	}
+	on, adm, _ := h.usable(node)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n, ok := h.nodes[node]
+	if !ok || n.proto < 3 {
+		return false, false
+	}
+	return on, adm
 }
 
 // usable: a node that is connected and was heard from recently; admitting says whether its

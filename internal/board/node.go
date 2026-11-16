@@ -23,8 +23,9 @@ type NodeHub interface {
 // NodeProtocol: what orders a node understands. A coordinator places new work only on a node
 // at its own protocol or later; an older node keeps its running work and gates, and status
 // says to upgrade it. 1: nodes (absent in a hello = 1). 2: a start order's Ref names a joined
-// base to fetch (taskbase), which a protocol-1 node ignores and then fails the start.
-const NodeProtocol = 2
+// base to fetch (taskbase), which a protocol-1 node ignores and then fails the start. 3: job
+// orders (a scheduled job that runs on the node), which an older node drops as unknown.
+const NodeProtocol = 3
 
 // NodeHello: a node says who it is and what it holds. Live and Worktrees let a daemon that
 // restarted, or a node that reconnects, agree on what is still running and what can go.
@@ -120,6 +121,12 @@ type NodeCmd struct {
 	Spec       string `json:"spec,omitempty"`
 	Acceptance string `json:"acceptance,omitempty"`
 
+	// job: a scheduled job to run here (sh -c Command, in Repo's directory or the profile's)
+	Job        string `json:"job,omitempty"`
+	Command    string `json:"command,omitempty"`
+	RunID      int64  `json:"run_id,omitempty"`
+	TimeoutSec int    `json:"timeout_sec,omitempty"`
+
 	// status: the task moved; the node runs its own hooks.on_status (a board, a card)
 	Status string `json:"status,omitempty"`
 	Title  string `json:"title,omitempty"`
@@ -137,6 +144,10 @@ type NodeReport struct {
 	Err     string        `json:"err,omitempty"`
 	Tail    string        `json:"tail,omitempty"`
 	Verdict *gate.Verdict `json:"verdict,omitempty"`
+	// job: which run ended, and how
+	Job   string `json:"job,omitempty"`
+	RunID int64  `json:"run_id,omitempty"`
+	Exit  int    `json:"exit,omitempty"`
 }
 
 func (s *Service) node(tok string) error {

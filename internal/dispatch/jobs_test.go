@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fortunto2/swarm/internal/board"
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/db"
 )
@@ -138,5 +139,45 @@ func TestSpareJobWaitsForTheFirstAdmitAnswer(t *testing.T) {
 	d.jobsTick(ctx, utc("2026-11-16 03:05:02"))
 	if r := runs(t, d, "heavy"); len(r) != 1 || r[0].Skipped != "" || r[0].DueAt != utc("2026-11-16 03:00:00").Unix() {
 		t.Fatalf("heavy after the answer: %+v, want its 03:00 run", r)
+	}
+}
+
+// A job for a node that is not connected waits: its minute is not taken, so it runs once the
+// node is back.
+func TestNodeJobWaitsForItsNode(t *testing.T) {
+	d, _ := jobBed(t, map[string]config.Job{"far": {Cron: "0 * * * *", Run: "true", Node: "n1"}})
+	ctx := context.Background()
+	d.jobsTick(ctx, utc("2026-11-16 10:30:00"))
+	registered, _, _ := d.DB.JobDue(ctx, "far")
+	d.jobsTick(ctx, utc("2026-11-16 11:00:05"))
+	due, _, _ := d.DB.JobDue(ctx, "far")
+	if r := runs(t, d, "far"); len(r) != 0 || due != registered {
+		t.Fatalf("with its node away: %d runs, due %d (registered %d), want none and the minute kept", len(r), due, registered)
+	}
+}
+
+// A run ordered to a node that never reports is closed as lost past its deadline, and the job
+// is free to run again.
+func TestLostNodeJobIsClosed(t *testing.T) {
+	d, notified := jobBed(t, map[string]config.Job{"far": {Cron: "0 * * * *", Run: "true", Node: "n1"}})
+	ctx := context.Background()
+	id, _ := d.DB.StartJobRun(ctx, "far", 1, "")
+	d.jobs.set("far", true)
+	d.jobs.setRemote("far", remoteJob{run: id, node: "n1", deadline: utc("2026-11-16 10:00:00")})
+	d.jobsTick(ctx, utc("2026-11-16 10:00:30"))
+	r := runs(t, d, "far")
+	if len(r) != 1 || r[0].EndedAt == 0 || *r[0].Exit != -1 || !strings.Contains(r[0].Tail, "no report from node n1") {
+		t.Fatalf("lost run: %+v", r)
+	}
+	if d.jobs.count() != 0 {
+		t.Fatal("the lost job still counts as running")
+	}
+	if b, _ := os.ReadFile(notified); !strings.Contains(string(b), "job far exit -1") {
+		t.Fatalf("not told: %q", b)
+	}
+	// a late report of that run changes nothing
+	d.remoteJobDone(ctx, "n1", board.NodeReport{Kind: "job", Job: "far", RunID: id, Exit: 0, Tail: "late"})
+	if r := runs(t, d, "far"); *r[0].Exit != -1 {
+		t.Fatalf("a late report reopened the lost run: %+v", r[0])
 	}
 }

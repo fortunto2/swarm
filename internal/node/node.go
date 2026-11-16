@@ -34,6 +34,7 @@ import (
 	"github.com/fortunto2/swarm/internal/dispatch"
 	"github.com/fortunto2/swarm/internal/gate"
 	"github.com/fortunto2/swarm/internal/gitx"
+	"github.com/fortunto2/swarm/internal/jobs"
 	"github.com/fortunto2/swarm/internal/provider"
 	"github.com/fortunto2/swarm/internal/review"
 	"github.com/fortunto2/swarm/internal/shellx"
@@ -469,6 +470,8 @@ func (n *Node) do(ctx context.Context, c board.NodeCmd) {
 		n.gate(ctx, c)
 	case "cleanup":
 		n.cleanup(ctx, c.Repo, c.Task)
+	case "job":
+		n.runJob(ctx, c)
 
 	default:
 		n.Log.Warn("unknown order", "kind", c.Kind)
@@ -751,6 +754,23 @@ func (n *Node) gate(ctx context.Context, c board.NodeCmd) {
 		vd = review.After(ctx, vd, s)
 	}
 	verdict(vd)
+}
+
+// runJob: a scheduled job the coordinator gave this node, in its copy of the repo (or the
+// profile's directory) with this machine's environment; the report carries exit and tail.
+func (n *Node) runJob(ctx context.Context, c board.NodeCmd) {
+	dir := n.Cfg.Dir
+	if r, ok := n.Cfg.Repos[c.Repo]; c.Repo != "" && ok {
+		dir = config.Expand(r.Path)
+	}
+	timeout := time.Duration(c.TimeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	n.Log.Info("job started", "job", c.Job, "run", c.RunID)
+	exit, out := jobs.Exec(ctx, c.Command, dir, append(os.Environ(), "SWARM_JOB="+c.Job, "SWARM_PROFILE="+n.Cfg.Dir), timeout)
+	n.Log.Info("job done", "job", c.Job, "run", c.RunID, "exit", exit)
+	n.report(context.WithoutCancel(ctx), board.NodeReport{Kind: "job", Job: c.Job, RunID: c.RunID, Exit: exit, Tail: out})
 }
 
 // statusHooks runs this node's hooks.on_status for a task of its own: {task} {status}

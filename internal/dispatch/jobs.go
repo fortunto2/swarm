@@ -6,15 +6,14 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/fortunto2/swarm/internal/board"
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/jobs"
-	"github.com/fortunto2/swarm/internal/shellx"
 )
 
 // jobState: which scheduled jobs are running now. Started from the loop and from the board
@@ -22,6 +21,36 @@ import (
 type jobState struct {
 	mu      sync.Mutex
 	running map[string]bool
+	remote  map[string]remoteJob // running on a node: ended by its report, or by the guard
+}
+
+// remoteJob: a run ordered to a node; past deadline with no report it is closed as lost.
+type remoteJob struct {
+	run      int64
+	node     string
+	deadline time.Time
+}
+
+func (j *jobState) setRemote(name string, r remoteJob) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.remote == nil {
+		j.remote = map[string]remoteJob{}
+	}
+	j.remote[name] = r
+}
+
+// takeRemote: the remote run of a job, removed, if it is the one named (run 0: any past now).
+func (j *jobState) takeRemote(name string, run int64, now time.Time) (remoteJob, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	r, ok := j.remote[name]
+	if !ok || (run != 0 && r.run != run) || (run == 0 && now.Before(r.deadline)) {
+		return remoteJob{}, false
+	}
+	delete(j.remote, name)
+	delete(j.running, name)
+	return r, true
 }
 
 func (j *jobState) set(name string, on bool) bool {
@@ -60,7 +89,15 @@ func jobTimeout(j config.Job) time.Duration {
 // while the daemon was down runs once when it is back (the latest one only). A spare job on a
 // host that is not admitting is skipped for that minute, and the skip is recorded.
 func (d *Daemon) jobsTick(ctx context.Context, now time.Time) {
-	if len(d.Cfg.Jobs) == 0 || d.draining.Load() {
+	if len(d.Cfg.Jobs) == 0 {
+		return
+	}
+	for _, name := range slices.Sorted(maps.Keys(d.Cfg.Jobs)) { // a node that never reported
+		if r, ok := d.jobs.takeRemote(name, 0, now); ok {
+			d.endJob(ctx, name, d.Cfg.Jobs[name], r.run, -1, "[no report from node "+r.node+" by the job's timeout: lost]")
+		}
+	}
+	if d.draining.Load() {
 		return
 	}
 	for _, name := range slices.Sorted(maps.Keys(d.Cfg.Jobs)) {
@@ -84,7 +121,18 @@ func (d *Daemon) jobsTick(ctx context.Context, now time.Time) {
 		if prev.Unix() <= last {
 			continue
 		}
-		if j.Spare && d.Cfg.Limits.Admit != "" {
+		if j.Node != "" {
+			// its node runs it: away (or too old for job orders), the minute waits for it
+			online, admitting := d.hub.jobNode(j.Node)
+			if !online {
+				continue
+			}
+			if j.Spare && !admitting {
+				_ = d.DB.SetJobDue(ctx, name, prev.Unix())
+				_, _ = d.DB.StartJobRun(ctx, name, prev.Unix(), "held: node "+j.Node+" is not admitting")
+				continue
+			}
+		} else if j.Spare && d.Cfg.Limits.Admit != "" {
 			if !d.admit.checked {
 				continue // the first answer of limits.admit is on its way: decide then, not skip blind
 			}
@@ -115,6 +163,9 @@ func (d *Daemon) startJob(ctx context.Context, name string, due int64) (int64, e
 	if !ok {
 		return 0, fmt.Errorf("no job %q", name)
 	}
+	if j.Node != "" {
+		return d.startRemoteJob(ctx, name, j, due)
+	}
 	d.notifyMu.Lock()
 	if d.closing {
 		d.notifyMu.Unlock()
@@ -139,48 +190,61 @@ func (d *Daemon) startJob(ctx context.Context, name string, due int64) (int64, e
 	go func() {
 		defer d.bg.Done()
 		defer d.jobs.set(name, false)
-		jctx, cancel := context.WithTimeout(d.prepCtx, jobTimeout(j)) // the daemon stopping stops it too
-		defer cancel()
-		cmd := shellx.Command(jctx, j.Run)
-		cmd.Dir = dir
 		// the operator's command, as hooks are: the daemon's environment, plus where it runs from
-		cmd.Env = append(os.Environ(), "SWARM_JOB="+name, "SWARM_PROFILE="+d.Cfg.Dir)
-		var out tail
-		cmd.Stdout, cmd.Stderr = &out, &out
-		err := cmd.Run()
-		exit := 0
-		var ee *exec.ExitError
-		switch {
-		case errors.Is(jctx.Err(), context.DeadlineExceeded):
-			exit = 124
-			out.Write([]byte("\n[killed: over its timeout of " + jobTimeout(j).String() + "]"))
-		case jctx.Err() != nil:
-			exit = 125
-			out.Write([]byte("\n[killed: the daemon stopped]"))
-		case errors.As(err, &ee):
-			exit = ee.ExitCode()
-		case err != nil:
-			exit = 127
-			out.Write([]byte("\n" + err.Error()))
-		}
-		text := d.redact.Apply(out.String())
-		bg := context.WithoutCancel(ctx)
-		_ = d.DB.EndJobRun(bg, id, exit, text)
-		d.DB.Event(bg, "swarmd", 0, "job_done", map[string]any{"job": name, "run": id, "exit": exit})
-		d.Log.Info("job done", "job", name, "exit", exit)
-		notify := j.Notify
-		if notify == "" {
-			notify = "fail"
-		}
-		if notify == "always" || (notify == "fail" && exit != 0) {
-			last := strings.TrimSpace(text)
-			if i := strings.LastIndex(last, "\n"); i >= 0 {
-				last = last[i+1:]
-			}
-			d.notify(fmt.Sprintf("swarm %s: job %s exit %d: %s", d.Cfg.Profile.Name, name, exit, clip(last, 300)))
-		}
+		env := append(os.Environ(), "SWARM_JOB="+name, "SWARM_PROFILE="+d.Cfg.Dir)
+		exit, out := jobs.Exec(d.prepCtx, j.Run, dir, env, jobTimeout(j)) // the daemon stopping stops it too
+		d.endJob(context.WithoutCancel(ctx), name, j, id, exit, out)
 	}()
 	return id, nil
+}
+
+// startRemoteJob orders a job to its node; the node's report (or the guard, past the job's
+// timeout and five minutes more) ends the run.
+func (d *Daemon) startRemoteJob(ctx context.Context, name string, j config.Job, due int64) (int64, error) {
+	if online, _ := d.hub.jobNode(j.Node); !online {
+		return 0, fmt.Errorf("node %s is not connected (or too old for job orders)", j.Node)
+	}
+	if !d.jobs.set(name, true) {
+		return 0, errJobRunning
+	}
+	id, err := d.DB.StartJobRun(ctx, name, due, "")
+	if err != nil {
+		d.jobs.set(name, false)
+		return 0, err
+	}
+	d.jobs.setRemote(name, remoteJob{run: id, node: j.Node, deadline: time.Now().Add(jobTimeout(j) + 5*time.Minute)})
+	d.hub.order(j.Node, board.NodeCmd{Kind: "job", Job: name, Command: j.Run, Repo: j.Repo, RunID: id,
+		TimeoutSec: int(jobTimeout(j).Seconds())})
+	d.DB.Event(ctx, "swarmd", 0, "job_ordered", map[string]any{"job": name, "run": id, "node": j.Node})
+	return id, nil
+}
+
+// remoteJobDone: a node reported a job run's end.
+func (d *Daemon) remoteJobDone(ctx context.Context, node string, r board.NodeReport) {
+	rj, ok := d.jobs.takeRemote(r.Job, r.RunID, time.Now())
+	if !ok || rj.node != node {
+		return // not ours, or already closed as lost
+	}
+	d.endJob(ctx, r.Job, d.Cfg.Jobs[r.Job], r.RunID, r.Exit, r.Tail)
+}
+
+// endJob records a run's end, wherever it ran, and tells the operator by the job's notify.
+func (d *Daemon) endJob(ctx context.Context, name string, j config.Job, id int64, exit int, out string) {
+	text := d.redact.Apply(out)
+	_ = d.DB.EndJobRun(ctx, id, exit, text)
+	d.DB.Event(ctx, "swarmd", 0, "job_done", map[string]any{"job": name, "run": id, "exit": exit})
+	d.Log.Info("job done", "job", name, "exit", exit)
+	notify := j.Notify
+	if notify == "" {
+		notify = "fail"
+	}
+	if notify == "always" || (notify == "fail" && exit != 0) {
+		last := strings.TrimSpace(text)
+		if i := strings.LastIndex(last, "\n"); i >= 0 {
+			last = last[i+1:]
+		}
+		d.notify(fmt.Sprintf("swarm %s: job %s exit %d: %s", d.Cfg.Profile.Name, name, exit, clip(last, 300)))
+	}
 }
 
 // RunJob starts a job by hand (`swarm jobs run`), whatever its schedule says.
@@ -197,26 +261,4 @@ func clip(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
-}
-
-// tail keeps the last 4 KB written to it.
-type tail struct {
-	mu  sync.Mutex
-	buf []byte
-}
-
-func (t *tail) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > 4096 {
-		t.buf = append([]byte(nil), t.buf[len(t.buf)-4096:]...)
-	}
-	return len(p), nil
-}
-
-func (t *tail) String() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return string(t.buf)
 }

@@ -513,3 +513,46 @@ if [ ! -f %[1]q/rejected ]; then touch %[1]q/rejected; printf 'two.go:1: wrong\n
 		t.Fatalf("review_fail events = %s, want 1", n)
 	}
 }
+
+// A job given to a node runs there, in the node's own copy of its repo, and its end comes
+// back to the coordinator's record.
+func TestJobOnANode(t *testing.T) {
+	marks := t.TempDir()
+	coord, nodeProf, _, clone := nodeBed(t, "exit 1\n", "", fmt.Sprintf(`
+[jobs.far]
+cron = "0 9 * * 1-5"
+node = "n1"
+repo = "app"
+run = "pwd > %s/pwd; echo \"ran $SWARM_JOB\""
+`, marks))
+	if out, err := swarm(t, coord, 30*time.Second, "init"); err != nil {
+		t.Fatalf("init: %v %s", err, out)
+	}
+	daemon := exec.Command(bin, "--profile", coord, "daemon")
+	var dlog bytes.Buffer
+	daemon.Stdout, daemon.Stderr = &dlog, &dlog
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() })
+	_, nlog := startNode(t, nodeProf)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon:\n%s\nnode:\n%s", dlog.String(), nlog.String())
+		}
+	})
+	waitFor(t, 30*time.Second, func() bool { return strings.Contains(status(t, coord), " online") }, "the node never connected")
+	if out, err := swarm(t, coord, 10*time.Second, "jobs", "run", "far"); err != nil {
+		t.Fatalf("jobs run: %v %s", err, out)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		return sqlite(t, coord, "SELECT count(*) FROM job_runs WHERE job='far' AND ended_at IS NOT NULL") == "1"
+	}, "the node's job never reported")
+	if got := sqlite(t, coord, "SELECT exit||' '||tail FROM job_runs WHERE job='far'"); !strings.HasPrefix(got, "0 ") || !strings.Contains(got, "ran far") {
+		t.Fatalf("run record: %q", got)
+	}
+	pwd, _ := os.ReadFile(filepath.Join(marks, "pwd"))
+	if got, _ := filepath.EvalSymlinks(strings.TrimSpace(string(pwd))); got != mustEval(t, clone) {
+		t.Fatalf("the job ran in %q, want the node's clone %q", got, clone)
+	}
+}
