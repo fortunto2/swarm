@@ -126,6 +126,8 @@ type NodeCmd struct {
 	Command    string `json:"command,omitempty"`
 	RunID      int64  `json:"run_id,omitempty"`
 	TimeoutSec int    `json:"timeout_sec,omitempty"`
+	// an agent job: Prompt (above) on the node's account Provider (above), with AllowedTools
+	AllowedTools []string `json:"allowed_tools,omitempty"`
 
 	// status: the task moved; the node runs its own hooks.on_status (a board, a card)
 	Status string `json:"status,omitempty"`
@@ -145,9 +147,10 @@ type NodeReport struct {
 	Tail    string        `json:"tail,omitempty"`
 	Verdict *gate.Verdict `json:"verdict,omitempty"`
 	// job: which run ended, and how
-	Job   string `json:"job,omitempty"`
-	RunID int64  `json:"run_id,omitempty"`
-	Exit  int    `json:"exit,omitempty"`
+	Job   string  `json:"job,omitempty"`
+	RunID int64   `json:"run_id,omitempty"`
+	Exit  int     `json:"exit,omitempty"`
+	Cost  float64 `json:"cost_usd,omitempty"`
 }
 
 func (s *Service) node(tok string) error {

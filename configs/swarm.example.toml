@@ -105,3 +105,12 @@ run = "make index"
 timeout = "20m"
 notify = "fail"
 spare = true                 # skipped for the night while limits.admit holds
+
+# An agent job: the account works the prompt in the job's directory; its final text is kept.
+[jobs.weekly-review]
+cron = "0 7 * * 1"
+repo = "app"
+provider = "claude-a"
+prompt = "Run swarm report --since 7d and write three lines: merged, first try, what blocked most."
+allowed_tools = ["Bash(swarm report:*)"]
+timeout = "15m"

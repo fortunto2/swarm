@@ -254,3 +254,28 @@ func TestNodeOf(t *testing.T) {
 		t.Fatal("a profile without nodes runs everything here")
 	}
 }
+
+func TestJobRules(t *testing.T) {
+	cases := map[string]struct{ jobs, want string }{
+		"ok command":   {"[jobs.a]\ncron = \"0 * * * *\"\nrun = \"true\"\n", ""},
+		"ok agent":     {"[jobs.a]\ncron = \"0 * * * *\"\nprompt = \"report\"\nprovider = \"claude-a\"\n", ""},
+		"both":         {"[jobs.a]\ncron = \"0 * * * *\"\nrun = \"true\"\nprompt = \"x\"\nprovider = \"claude-a\"\n", "one of them"},
+		"neither":      {"[jobs.a]\ncron = \"0 * * * *\"\n", "one of them"},
+		"no provider":  {"[jobs.a]\ncron = \"0 * * * *\"\nprompt = \"x\"\n", "needs a provider"},
+		"bad cron":     {"[jobs.a]\ncron = \"61 * * * *\"\nrun = \"true\"\n", "minute"},
+		"unknown repo": {"[jobs.a]\ncron = \"0 * * * *\"\nrun = \"true\"\nrepo = \"nope\"\n", "no such repo"},
+		"not a remote": {"[jobs.a]\ncron = \"0 * * * *\"\nrun = \"true\"\nnode = \"laptop\"\n", "not a remote node"},
+		"bad notify":   {"[jobs.a]\ncron = \"0 * * * *\"\nrun = \"true\"\nnotify = \"sometimes\"\n", "notify"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(write(t, good+"\n"+tc.jobs))
+			if tc.want == "" && err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("err=%v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}

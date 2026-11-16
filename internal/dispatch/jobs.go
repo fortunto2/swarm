@@ -14,6 +14,7 @@ import (
 	"github.com/fortunto2/swarm/internal/board"
 	"github.com/fortunto2/swarm/internal/config"
 	"github.com/fortunto2/swarm/internal/jobs"
+	"github.com/fortunto2/swarm/internal/provider"
 )
 
 // jobState: which scheduled jobs are running now. Started from the loop and from the board
@@ -94,7 +95,7 @@ func (d *Daemon) jobsTick(ctx context.Context, now time.Time) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(d.Cfg.Jobs)) { // a node that never reported
 		if r, ok := d.jobs.takeRemote(name, 0, now); ok {
-			d.endJob(ctx, name, d.Cfg.Jobs[name], r.run, -1, "[no report from node "+r.node+" by the job's timeout: lost]")
+			d.endJob(ctx, name, d.Cfg.Jobs[name], r.run, -1, "[no report from node "+r.node+" by the job's timeout: lost]", 0)
 		}
 	}
 	if d.draining.Load() {
@@ -190,10 +191,16 @@ func (d *Daemon) startJob(ctx context.Context, name string, due int64) (int64, e
 	go func() {
 		defer d.bg.Done()
 		defer d.jobs.set(name, false)
+		if j.Prompt != "" {
+			run, err := provider.Agent(j.Provider, d.Cfg.Providers[j.Provider], d.Cfg.Profile, j.AllowedTools)
+			exit, out, cost := AgentRun(d.prepCtx, run, err, j.Prompt, dir, jobTimeout(j))
+			d.endJob(context.WithoutCancel(ctx), name, j, id, exit, out, cost)
+			return
+		}
 		// the operator's command, as hooks are: the daemon's environment, plus where it runs from
 		env := append(os.Environ(), "SWARM_JOB="+name, "SWARM_PROFILE="+d.Cfg.Dir)
 		exit, out := jobs.Exec(d.prepCtx, j.Run, dir, env, jobTimeout(j)) // the daemon stopping stops it too
-		d.endJob(context.WithoutCancel(ctx), name, j, id, exit, out)
+		d.endJob(context.WithoutCancel(ctx), name, j, id, exit, out, 0)
 	}()
 	return id, nil
 }
@@ -214,7 +221,7 @@ func (d *Daemon) startRemoteJob(ctx context.Context, name string, j config.Job, 
 	}
 	d.jobs.setRemote(name, remoteJob{run: id, node: j.Node, deadline: time.Now().Add(jobTimeout(j) + 5*time.Minute)})
 	d.hub.order(j.Node, board.NodeCmd{Kind: "job", Job: name, Command: j.Run, Repo: j.Repo, RunID: id,
-		TimeoutSec: int(jobTimeout(j).Seconds())})
+		TimeoutSec: int(jobTimeout(j).Seconds()), Prompt: j.Prompt, Provider: j.Provider, AllowedTools: j.AllowedTools})
 	d.DB.Event(ctx, "swarmd", 0, "job_ordered", map[string]any{"job": name, "run": id, "node": j.Node})
 	return id, nil
 }
@@ -225,13 +232,13 @@ func (d *Daemon) remoteJobDone(ctx context.Context, node string, r board.NodeRep
 	if !ok || rj.node != node {
 		return // not ours, or already closed as lost
 	}
-	d.endJob(ctx, r.Job, d.Cfg.Jobs[r.Job], r.RunID, r.Exit, r.Tail)
+	d.endJob(ctx, r.Job, d.Cfg.Jobs[r.Job], r.RunID, r.Exit, r.Tail, r.Cost)
 }
 
 // endJob records a run's end, wherever it ran, and tells the operator by the job's notify.
-func (d *Daemon) endJob(ctx context.Context, name string, j config.Job, id int64, exit int, out string) {
+func (d *Daemon) endJob(ctx context.Context, name string, j config.Job, id int64, exit int, out string, cost float64) {
 	text := d.redact.Apply(out)
-	_ = d.DB.EndJobRun(ctx, id, exit, text)
+	_ = d.DB.EndJobRun(ctx, id, exit, text, cost)
 	d.DB.Event(ctx, "swarmd", 0, "job_done", map[string]any{"job": name, "run": id, "exit": exit})
 	d.Log.Info("job done", "job", name, "exit", exit)
 	notify := j.Notify
@@ -245,6 +252,30 @@ func (d *Daemon) endJob(ctx context.Context, name string, j config.Job, id int64
 		}
 		d.notify(fmt.Sprintf("swarm %s: job %s exit %d: %s", d.Cfg.Profile.Name, name, exit, clip(last, 300)))
 	}
+}
+
+// AgentRun works one agent job (coordinator or node): exit 0 when the model finished, 1 when
+// its CLI reported the run as an error, 124 over the timeout, 125 when parent ended, 127 when
+// the account could not be set up or the CLI could not run. The text is its final answer.
+func AgentRun(parent context.Context, run func(context.Context, string, string) (provider.AgentResult, error),
+	setupErr error, prompt, dir string, timeout time.Duration) (int, string, float64) {
+	if setupErr != nil {
+		return 127, setupErr.Error(), 0
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	res, err := run(ctx, prompt, dir)
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil:
+		return 124, "[killed: over its timeout of " + timeout.String() + "]", 0
+	case ctx.Err() != nil:
+		return 125, "[killed: stopping]", 0
+	case err != nil:
+		return 127, err.Error(), 0
+	case res.Failed:
+		return 1, res.Text, res.CostUSD
+	}
+	return 0, res.Text, res.CostUSD
 }
 
 // RunJob starts a job by hand (`swarm jobs run`), whatever its schedule says.

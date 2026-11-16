@@ -556,3 +556,56 @@ run = "pwd > %s/pwd; echo \"ran $SWARM_JOB\""
 		t.Fatalf("the job ran in %q, want the node's clone %q", got, clone)
 	}
 }
+
+// An agent job on a node: the node's own account of that id works the prompt there.
+func TestAgentJobOnANode(t *testing.T) {
+	marks := t.TempDir()
+	agent := filepath.Join(marks, "agent.sh")
+	if err := os.WriteFile(agent, []byte("#!/bin/sh\necho \"node agent read: $(cat)\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	coord, nodeProf, _, _ := nodeBed(t, "exit 1\n", "", fmt.Sprintf(`
+[providers.ag]
+kind = "mock"
+family = "mock"
+roles = ["lead"]
+slots = 1
+command = [%q]
+
+[jobs.think]
+cron = "0 9 * * 1-5"
+node = "n1"
+prompt = "summarise the week"
+provider = "ag"
+`, agent))
+	b, _ := os.ReadFile(filepath.Join(coord, "swarm.toml"))
+	if err := os.WriteFile(filepath.Join(coord, "swarm.toml"), []byte(strings.Replace(string(b), `accounts = ["mock"]`, `accounts = ["mock", "ag"]`, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := swarm(t, coord, 30*time.Second, "init"); err != nil {
+		t.Fatalf("init: %v %s", err, out)
+	}
+	daemon := exec.Command(bin, "--profile", coord, "daemon")
+	var dlog bytes.Buffer
+	daemon.Stdout, daemon.Stderr = &dlog, &dlog
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = daemon.Process.Signal(os.Interrupt); _ = daemon.Wait() })
+	_, nlog := startNode(t, nodeProf)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon:\n%s\nnode:\n%s", dlog.String(), nlog.String())
+		}
+	})
+	waitFor(t, 30*time.Second, func() bool { return strings.Contains(status(t, coord), " online") }, "the node never connected")
+	if out, err := swarm(t, coord, 10*time.Second, "jobs", "run", "think"); err != nil {
+		t.Fatalf("jobs run: %v %s", err, out)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		return sqlite(t, coord, "SELECT count(*) FROM job_runs WHERE job='think' AND ended_at IS NOT NULL") == "1"
+	}, "the node's agent job never reported")
+	if got := sqlite(t, coord, "SELECT exit||' '||tail FROM job_runs WHERE job='think'"); !strings.HasPrefix(got, "0 ") || !strings.Contains(got, "node agent read: summarise the week") {
+		t.Fatalf("run record: %q", got)
+	}
+}

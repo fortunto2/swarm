@@ -181,3 +181,45 @@ func TestLostNodeJobIsClosed(t *testing.T) {
 		t.Fatalf("a late report reopened the lost run: %+v", r[0])
 	}
 }
+
+// An agent job: the prompt reaches the account on stdin in the job's directory, the final text
+// is the run's output; a run the CLI reports as an error is exit 1 and told; over its
+// timeout it is killed (124).
+func TestAgentJobs(t *testing.T) {
+	marks := t.TempDir()
+	agent := filepath.Join(marks, "agent.sh")
+	if err := os.WriteFile(agent, []byte(`#!/bin/sh
+p=$(cat)
+case "$p" in
+  *slow*) sleep 30 ;;
+  *broken*) echo "could not reach the report"; echo FAILED ;;
+  *) echo "pwd $(pwd)"; echo "did: $p" ;;
+esac
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, notified := jobBed(t, map[string]config.Job{
+		"report": {Cron: "* * * * *", Prompt: "write the weekly report", Provider: "ag"},
+		"bad":    {Cron: "* * * * *", Prompt: "this one is broken", Provider: "ag"},
+		"slow":   {Cron: "* * * * *", Prompt: "slow", Provider: "ag", Timeout: config.Duration{Duration: 300 * time.Millisecond}},
+	})
+	d.Cfg.Providers = map[string]config.Provider{"ag": {Kind: "mock", Command: []string{agent}}}
+	ctx := context.Background()
+	d.jobsTick(ctx, utc("2026-11-16 10:00:00"))
+	d.jobsTick(ctx, utc("2026-11-16 10:01:00"))
+	r := runs(t, d, "report")
+	if len(r) != 1 || *r[0].Exit != 0 || !strings.Contains(r[0].Tail, "did: write the weekly report") ||
+		!strings.Contains(r[0].Tail, "pwd "+d.Cfg.Dir) && !strings.Contains(r[0].Tail, "pwd /private"+d.Cfg.Dir) {
+		t.Fatalf("report: %+v", r)
+	}
+	if r := runs(t, d, "bad"); len(r) != 1 || *r[0].Exit != 1 {
+		t.Fatalf("bad: %+v", r)
+	}
+	if r := runs(t, d, "slow"); len(r) != 1 || *r[0].Exit != 124 {
+		t.Fatalf("slow: %+v", r)
+	}
+	b, _ := os.ReadFile(notified)
+	if !strings.Contains(string(b), "job bad exit 1") || !strings.Contains(string(b), "job slow exit 124") || strings.Contains(string(b), "job report") {
+		t.Fatalf("notifications:\n%s", b)
+	}
+}

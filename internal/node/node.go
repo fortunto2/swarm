@@ -768,9 +768,20 @@ func (n *Node) runJob(ctx context.Context, c board.NodeCmd) {
 		timeout = 30 * time.Minute
 	}
 	n.Log.Info("job started", "job", c.Job, "run", c.RunID)
-	exit, out := jobs.Exec(ctx, c.Command, dir, append(os.Environ(), "SWARM_JOB="+c.Job, "SWARM_PROFILE="+n.Cfg.Dir), timeout)
+	var exit int
+	var out string
+	var cost float64
+	if c.Prompt != "" { // an agent job, on this node's account of that id
+		n.mu.Lock()
+		p := n.welcome.Providers[c.Provider]
+		n.mu.Unlock()
+		run, err := provider.Agent(c.Provider, p, n.Cfg.Profile, c.AllowedTools)
+		exit, out, cost = dispatch.AgentRun(ctx, run, err, c.Prompt, dir, timeout)
+	} else {
+		exit, out = jobs.Exec(ctx, c.Command, dir, append(os.Environ(), "SWARM_JOB="+c.Job, "SWARM_PROFILE="+n.Cfg.Dir), timeout)
+	}
 	n.Log.Info("job done", "job", c.Job, "run", c.RunID, "exit", exit)
-	n.report(context.WithoutCancel(ctx), board.NodeReport{Kind: "job", Job: c.Job, RunID: c.RunID, Exit: exit, Tail: out})
+	n.report(context.WithoutCancel(ctx), board.NodeReport{Kind: "job", Job: c.Job, RunID: c.RunID, Exit: exit, Tail: out, Cost: cost})
 }
 
 // statusHooks runs this node's hooks.on_status for a task of its own: {task} {status}

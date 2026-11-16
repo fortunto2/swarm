@@ -25,35 +25,8 @@ import (
 // A mock runs its command with the prompt on stdin. The process gets its own group, killed
 // with the review's context, and a killed reviewer's partial output is an error, not a verdict.
 func Reviewer(id string, p config.Provider, prof config.Profile, deny []string) (func(ctx context.Context, prompt, dir string) (string, error), error) {
-	env := func(ctx context.Context) ([]string, error) {
-		vals, err := ResolveEnv(ctx, p.Env, prof)
-		if err != nil {
-			return nil, err
-		}
-		return append(envx.Clean(), vals...), nil
-	}
 	run := func(ctx context.Context, name string, args []string, extra []string, prompt, dir string) (string, error) {
-		e, err := env(ctx)
-		if err != nil {
-			return "", err
-		}
-		cmd := exec.CommandContext(ctx, name, args...)
-		cmd.Dir = dir
-		cmd.Env = append(e, extra...)
-		cmd.Stdin = strings.NewReader(prompt)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-		cmd.WaitDelay = shellx.WaitDelay // a child holding stdout cannot hold the gate past it
-		var out, errb bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &out, &errb
-		err = cmd.Run()
-		if ctx.Err() != nil {
-			return "", fmt.Errorf("%s: %w", name, ctx.Err()) // a timeout's last words are not a verdict
-		}
-		if err != nil && out.Len() == 0 {
-			return "", fmt.Errorf("%s: %w: %s", name, err, lastLine(errb.String()))
-		}
-		return out.String(), nil
+		return runCLI(ctx, p, prof, name, args, extra, prompt, dir)
 	}
 	model := p.Models["review"]
 	if model == "" {
@@ -150,4 +123,31 @@ func Reviewer(id string, p config.Provider, prof config.Profile, deny []string) 
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+// runCLI runs a provider's CLI once: prompt on stdin, in dir, with the provider's resolved env
+// over a clean base, in its own process group killed with ctx. A killed run's output is an
+// error, never a result.
+func runCLI(ctx context.Context, p config.Provider, prof config.Profile, name string, args, extra []string, prompt, dir string) (string, error) {
+	vals, err := ResolveEnv(ctx, p.Env, prof)
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(append(envx.Clean(), vals...), extra...)
+	cmd.Stdin = strings.NewReader(prompt)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = shellx.WaitDelay // a child holding stdout cannot hold the caller past it
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("%s: %w", name, ctx.Err())
+	}
+	if err != nil && out.Len() == 0 {
+		return "", fmt.Errorf("%s: %w: %s", name, err, lastLine(errb.String()))
+	}
+	return out.String(), nil
 }

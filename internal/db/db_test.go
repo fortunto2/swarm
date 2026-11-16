@@ -277,7 +277,7 @@ func TestLatestJobRunsOnePerJobWithTheLastLine(t *testing.T) {
 	ctx := context.Background()
 	for i, j := range []string{"a", "b", "a"} {
 		id, _ := d.StartJobRun(ctx, j, int64(i), "")
-		_ = d.EndJobRun(ctx, id, i, fmt.Sprintf("line one\nrun %d", i))
+		_ = d.EndJobRun(ctx, id, i, fmt.Sprintf("line one\nrun %d", i), 0)
 	}
 	r, err := d.LatestJobRuns(ctx)
 	if err != nil || len(r) != 2 || r[0].Job != "a" || r[0].Tail != "run 2" || *r[0].Exit != 2 || r[1].Job != "b" {
@@ -294,7 +294,7 @@ func TestCloseLostJobRuns(t *testing.T) {
 	ctx := context.Background()
 	lost, _ := d.StartJobRun(ctx, "a", 1, "")
 	done, _ := d.StartJobRun(ctx, "b", 1, "")
-	_ = d.EndJobRun(ctx, done, 0, "fine")
+	_ = d.EndJobRun(ctx, done, 0, "fine", 0)
 	if n, err := d.CloseLostJobRuns(ctx); err != nil || n != 1 {
 		t.Fatalf("closed %d (%v), want 1", n, err)
 	}

@@ -218,11 +218,17 @@ type Config struct {
 // daemon was down, it runs once when it is back; a new job waits for its first scheduled
 // minute. Its exit and the tail of its output are kept; a failure is told through notify.
 type Job struct {
-	Cron    string   `toml:"cron" json:"cron"`                 // five fields, UTC: "0 14,21 * * 1-5"
-	Run     string   `toml:"run" json:"run"`                   // sh -c, with the daemon's environment (the operator's command)
-	Repo    string   `toml:"repo" json:"repo,omitempty"`       // run in that repo's directory; else the profile's
-	Timeout Duration `toml:"timeout" json:"timeout,omitempty"` // default 30m: then the whole group is killed
-	Notify  string   `toml:"notify" json:"notify,omitempty"`   // fail (default) | always | never
+	Cron string `toml:"cron" json:"cron"`         // five fields, UTC: "0 14,21 * * 1-5"
+	Run  string `toml:"run" json:"run,omitempty"` // sh -c, with the daemon's environment (the operator's command)
+	// Prompt, instead of run: an agent job. Provider (an account on the machine that runs it)
+	// works the prompt in the job's directory; AllowedTools are what it may use without a person
+	// (Claude's rule syntax, e.g. "Bash(make report:*)"). Its final text is the run's output.
+	Prompt       string   `toml:"prompt" json:"prompt,omitempty"`
+	Provider     string   `toml:"provider" json:"provider,omitempty"`
+	AllowedTools []string `toml:"allowed_tools" json:"allowed_tools,omitempty"`
+	Repo         string   `toml:"repo" json:"repo,omitempty"`       // run in that repo's directory; else the profile's
+	Timeout      Duration `toml:"timeout" json:"timeout,omitempty"` // default 30m: then the whole group is killed
+	Notify       string   `toml:"notify" json:"notify,omitempty"`   // fail (default) | always | never
 	// Spare: run only while limits.admit admits; held otherwise (a heavy job on a shared host).
 	Spare bool `toml:"spare" json:"spare,omitempty"`
 	// Node: a remote node runs it (its copy of repo, its environment). While that node is
@@ -343,8 +349,21 @@ func (c *Config) Validate() error {
 		if _, err := jobs.Parse(j.Cron); err != nil {
 			bad("jobs.%s: %v", name, err)
 		}
-		if strings.TrimSpace(j.Run) == "" {
-			bad("jobs.%s.run is empty", name)
+		if (strings.TrimSpace(j.Run) == "") == (strings.TrimSpace(j.Prompt) == "") {
+			bad("jobs.%s: give run (a command) or prompt (an agent job), one of them", name)
+		}
+		if j.Prompt != "" {
+			p, ok := c.Providers[j.Provider]
+			switch {
+			case !ok:
+				bad("jobs.%s.provider = %q: an agent job needs a provider of this profile", name, j.Provider)
+			case p.Kind != "claude" && p.Kind != "codex" && p.Kind != "mock":
+				bad("jobs.%s.provider = %q: kind %q cannot run a job", name, j.Provider, p.Kind)
+			case j.Node != "" && !slices.Contains(c.Nodes[j.Node].Accounts, j.Provider):
+				bad("jobs.%s.provider = %q: node %s has no such account", name, j.Provider, j.Node)
+			case j.Node == "" && c.Remote(c.NodeOf(j.Provider)):
+				bad("jobs.%s.provider = %q is logged in on node %s: set node = %q, or use an account here", name, j.Provider, c.NodeOf(j.Provider), c.NodeOf(j.Provider))
+			}
 		}
 		if _, ok := c.Repos[j.Repo]; j.Repo != "" && !ok {
 			bad("jobs.%s.repo = %q: no such repo", name, j.Repo)

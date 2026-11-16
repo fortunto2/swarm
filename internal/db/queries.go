@@ -782,9 +782,13 @@ func (d *DB) StartJobRun(ctx context.Context, name string, due int64, skipped st
 	return r.LastInsertId()
 }
 
-// EndJobRun closes a run with its exit code and output tail.
-func (d *DB) EndJobRun(ctx context.Context, id int64, exit int, tail string) error {
-	_, err := d.ExecContext(ctx, `UPDATE job_runs SET ended_at=unixepoch(), exit=?, tail=? WHERE id=?`, exit, tail, id)
+// EndJobRun closes a run with its exit code, output tail and (agent jobs) cost.
+func (d *DB) EndJobRun(ctx context.Context, id int64, exit int, tail string, cost float64) error {
+	var c any
+	if cost > 0 {
+		c = cost
+	}
+	_, err := d.ExecContext(ctx, `UPDATE job_runs SET ended_at=unixepoch(), exit=?, tail=?, cost_usd=? WHERE id=?`, exit, tail, c, id)
 	return err
 }
 

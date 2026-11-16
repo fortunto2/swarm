@@ -42,6 +42,8 @@ var migrations = []string{
 	CREATE TABLE IF NOT EXISTS job_runs(id INTEGER PRIMARY KEY, job TEXT NOT NULL, due_at INTEGER NOT NULL,
 	  started_at INTEGER NOT NULL, ended_at INTEGER, exit INTEGER, skipped TEXT, tail TEXT);
 	CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs(job, id);`,
+	// 6: an agent job's cost, as its CLI estimated it
+	`ALTER TABLE job_runs ADD COLUMN cost_usd REAL;`,
 }
 
 type DB struct {

@@ -451,6 +451,21 @@
           "run": {
             "type": "string"
           },
+          "prompt": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "allowed_tools": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "repo": {
             "type": "string"
           },
@@ -470,8 +485,7 @@
           }
         },
         "required": [
-          "cron",
-          "run"
+          "cron"
         ],
         "additionalProperties": false
       }
