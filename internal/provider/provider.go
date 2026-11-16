@@ -187,7 +187,7 @@ func New(id string, p config.Provider, prof config.Profile) (Adapter, error) {
 	case "claude":
 		return claude{id: id, p: p, prof: prof}, nil
 	case "codex":
-		return nil, fmt.Errorf("provider %s: codex adapter lands in phase 4", id)
+		return codex{id: id, p: p, prof: prof}, nil
 	case "mock":
 		return mock{p: p, prof: prof}, nil
 	}
@@ -451,10 +451,50 @@ var refusalPatterns = []string{"safeguards flagged", "Usage Policy", "legal/aup"
 
 // authPatterns are matched against the final result's text only, never the whole log: a
 // worker that greps a file mentioning /login must not take its provider down.
-var authPatterns = []string{"Not logged in", "Invalid API key", "OAuth token has expired", "Please run /login"}
+var authPatterns = []string{"Not logged in", "Invalid API key", "OAuth token has expired", "Please run /login",
+	"codex login"} // codex: "...run `codex login`"
 
 func authText(s string) bool {
 	return slices.ContainsFunc(authPatterns, func(p string) bool { return strings.Contains(s, p) })
+}
+
+// parseCodex reads `codex exec --json`: a turn.completed event carries the token counts
+// (input includes cached input; the CLI reports no cost), turn.failed and error events the
+// reason. The account's limit reads "You've hit your usage limit", which limitAny matches.
+func parseCodex(lines []string, r Result) Result {
+	for _, line := range lines {
+		if !strings.Contains(line, `"type":"turn.`) && !strings.Contains(line, `"type":"error"`) {
+			continue
+		}
+		var e struct {
+			Type  string `json:"type"`
+			Usage struct {
+				In  int64 `json:"input_tokens"`
+				Out int64 `json:"output_tokens"`
+			} `json:"usage"`
+			Message string `json:"message"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(line), &e) != nil {
+			continue
+		}
+		switch e.Type {
+		case "turn.completed":
+			r = Result{TokensIn: e.Usage.In, TokensOut: e.Usage.Out, Known: true}
+		case "turn.failed", "error":
+			msg := e.Error.Message + e.Message
+			r.Known = true
+			// not logged in, measured on codex-cli 0.147 with an empty CODEX_HOME: "unexpected
+			// status 401 Unauthorized: Missing bearer or basic authentication in header"
+			r.AuthFailed = r.AuthFailed || authText(msg) || strings.Contains(msg, "401 Unauthorized")
+			if until := LimitReset(msg, time.Now()); until > 0 {
+				r.LimitedUntil = until
+			}
+		}
+	}
+	return r
 }
 
 // ParseResult reads Claude's stream-json: the last {"type":"result"} line carries the
@@ -490,6 +530,9 @@ func ParseResult(log string) Result {
 		if e.IsError {
 			r.LimitedUntil = LimitReset(e.Text, time.Now())
 		}
+	}
+	if !r.Known {
+		r = parseCodex(lines, r)
 	}
 	if !r.Known && len(lines) > 0 {
 		last := lines[len(lines)-1]

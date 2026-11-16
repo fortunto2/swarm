@@ -52,7 +52,7 @@ models = { S = "claude-fable-5-2", A = "opus", B = "sonnet" }
 [providers.codex]
 kind = "codex"
 family = "openai"
-home = "~/.swarm/accounts/codex"
+home = "~/.swarm/accounts/codex"   # CODEX_HOME: log in once with CODEX_HOME=<this> codex login
 slots = 3
 tiers = ["A", "B"]
 roles = ["worker", "reviewer"]
