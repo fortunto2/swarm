@@ -253,7 +253,7 @@ func (d *Daemon) merge(ctx context.Context, t db.Task) error {
 	if r.Merge == "branch" {
 		// delivered for review: the gated commit, on top of main, as a branch of its own
 		name := r.BranchPrefix + fmt.Sprintf("T%d", t.ID)
-		if _, err := gitx.Run(ctx, r.Path, "branch", "-f", name, t.ResultCommit.String); err != nil {
+		if err := gitx.SetBranch(ctx, r.Path, name, t.ResultCommit.String, wt.Path); err != nil {
 			return err
 		}
 		d.DB.Event(ctx, "swarmd", t.ID, "delivered", map[string]string{"branch": name, "commit": t.ResultCommit.String})

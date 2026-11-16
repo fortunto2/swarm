@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/fortunto2/swarm/internal/envx"
@@ -141,4 +142,51 @@ func Transfer(ctx context.Context, dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// CheckedOutAt returns the worktree path that has branch checked out, "" when none does.
+func CheckedOutAt(ctx context.Context, dir, branch string) (string, error) {
+	out, err := Run(ctx, dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	path := ""
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			path = strings.TrimPrefix(line, "worktree ")
+		case line == "branch refs/heads/"+branch:
+			return path, nil
+		}
+	}
+	return "", nil
+}
+
+// SetBranch points branch at commit. `git branch -f` refuses a branch any worktree has
+// checked out; when the only holder is own (a worktree the caller is about to delete, its
+// work already in commit) the ref is moved with update-ref instead. A branch held by any
+// other worktree is an error naming it: moving it would desync someone else's checkout.
+func SetBranch(ctx context.Context, dir, branch, commit, own string) error {
+	holder, err := CheckedOutAt(ctx, dir, branch)
+	if err != nil {
+		return err
+	}
+	switch {
+	case holder == "":
+		_, err = Run(ctx, dir, "branch", "-f", branch, commit)
+	case own != "" && sameDir(holder, own):
+		_, err = Run(ctx, dir, "update-ref", "refs/heads/"+branch, commit)
+	default:
+		return fmt.Errorf("branch %s is checked out in worktree %s, which is not this task's; refusing to move it", branch, holder)
+	}
+	return err
+}
+
+func sameDir(a, b string) bool {
+	ra, e1 := filepath.EvalSymlinks(a)
+	rb, e2 := filepath.EvalSymlinks(b)
+	if e1 != nil || e2 != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return ra == rb
 }
