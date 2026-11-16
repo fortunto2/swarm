@@ -405,6 +405,9 @@ func reportCmd() *cobra.Command {
 			for _, k := range slices.Sorted(maps.Keys(r.Signals)) {
 				fmt.Fprintf(out, "  %s: %d\n", k, r.Signals[k])
 			}
+			for _, j := range r.Jobs {
+				fmt.Fprintf(out, "  job %-20s %3d runs, %d failed, %d skipped; $%.2f\n", j.Job, j.Runs, j.Failed, j.Skipped, j.CostUSD)
+			}
 			return nil
 		},
 	}

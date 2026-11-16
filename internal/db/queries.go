@@ -583,6 +583,16 @@ type Report struct {
 	GateFails []Count          `json:"gate_fail_reasons"`
 	Blocked   []BlockedTask    `json:"blocked_now"`
 	Signals   map[string]int   `json:"signals"` // flaky, warnings, refusals, rebase conflicts, ...
+	Jobs      []JobReport      `json:"jobs,omitempty"`
+}
+
+// JobReport: one scheduled job over the period.
+type JobReport struct {
+	Job     string  `json:"job"`
+	Runs    int     `json:"runs"`
+	Failed  int     `json:"failed"`
+	Skipped int     `json:"skipped"`
+	CostUSD float64 `json:"cost_usd"`
 }
 
 type ProviderReport struct {
@@ -659,7 +669,21 @@ func (d *DB) Report(ctx context.Context, since int64) (Report, error) {
 		r.Blocked = append(r.Blocked, b)
 	}
 	rows.Close()
-	for _, typ := range []string{"gate_flaky", "gate_warning", "refused", "rebase_conflict", "infra_fail", "provider_cooling", "provider_disabled", "orphan_killed"} {
+	jrows, err := d.QueryContext(ctx, `SELECT job, count(*), sum(coalesce(exit,0) != 0 AND skipped IS NULL),
+		sum(skipped IS NOT NULL), coalesce(sum(cost_usd),0) FROM job_runs WHERE started_at >= ? GROUP BY job ORDER BY job`, since)
+	if err != nil {
+		return r, err
+	}
+	for jrows.Next() {
+		var j JobReport
+		if err := jrows.Scan(&j.Job, &j.Runs, &j.Failed, &j.Skipped, &j.CostUSD); err != nil {
+			jrows.Close()
+			return r, err
+		}
+		r.Jobs = append(r.Jobs, j)
+	}
+	jrows.Close()
+	for _, typ := range []string{"gate_flaky", "gate_warning", "refused", "rebase_conflict", "infra_fail", "provider_cooling", "provider_disabled", "orphan_killed", "review_skipped", "escalated"} {
 		var n int
 		if err := d.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE type=? AND at >= ?`, typ, since).Scan(&n); err != nil {
 			return r, err

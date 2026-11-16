@@ -303,3 +303,25 @@ func TestCloseLostJobRuns(t *testing.T) {
 		t.Fatalf("lost run: %+v", r[0])
 	}
 }
+
+
+func TestReportCountsJobRuns(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	for _, exit := range []int{0, 2, 0} {
+		id, _ := d.StartJobRun(ctx, "nightly", 1, "")
+		_ = d.EndJobRun(ctx, id, exit, "", 0.25)
+	}
+	_, _ = d.StartJobRun(ctx, "nightly", 2, "held: busy")
+	r, err := d.Report(ctx, 0)
+	if err != nil || len(r.Jobs) != 1 {
+		t.Fatalf("report: %+v %v", r.Jobs, err)
+	}
+	if j := r.Jobs[0]; j.Runs != 4 || j.Failed != 1 || j.Skipped != 1 || j.CostUSD != 0.75 {
+		t.Fatalf("job report: %+v, want 4 runs, 1 failed, 1 skipped, $0.75", j)
+	}
+}

@@ -220,4 +220,39 @@ swarm --profile <node> drain           # the same, on each node
 A draining daemon (or node) starts no new attempt, lets its running attempts and gates
 finish, then exits; launchd (`KeepAlive`) or systemd (`Restart=always`) starts it again on
 the new binary. `swarm status` says `draining` meanwhile; `swarm drain --cancel` takes it
-back. A coordinator and a node one release apart still connect, so the order does not matter.
+back. A coordinator and a node of different node protocols still connect: the older node keeps
+its running work but takes nothing new until it is upgraded too (`swarm status` says so).
+
+## 9. A second account family (Codex)
+
+`[providers.<id>] kind = "codex"`, `home = "<dir>"` (CODEX_HOME), then log that account in once:
+`CODEX_HOME=<dir> codex login`. Its workers follow `[profile.sandbox]` like Claude's (off:
+unconfined; on: Codex's `workspace-write`, with the repo's `.git` and `allow_write` writable).
+Not under `safety = "strict"` yet. A usage limit cools the account until the time Codex names.
+
+## 10. A reviewer before merge
+
+`[repos.<name>] review = "<provider>"`: after the gate's commands pass, that account reads the
+task and the diff (read-only) and approves or rejects; a reject is the next attempt's note. Pick
+an account of another family where you have one. It runs where the gate runs: with `gate_on`
+naming a node, the reviewer must be one of that node's accounts. A review that cannot run passes
+with a notification; an approval is remembered for the exact diff.
+
+## 11. Scheduled work
+
+```toml
+[jobs.nightly-index]          # a command
+cron = "15 3 * * *"           # UTC
+repo = "app"
+run = "make index"
+
+[jobs.weekly-review]          # an agent job
+cron = "0 7 * * 1"
+provider = "claude-a"
+prompt = "Run swarm report --since 7d; three lines: merged, first try, what blocked most."
+allowed_tools = ["Bash(swarm report:*)"]
+node = "laptop"               # optional: a node runs it, with its own account and clone
+```
+
+`swarm jobs` lists them with their next and last run; `swarm jobs run <name>` starts one now;
+`swarm status` names the ones whose last run failed; a failure goes to `notify`.
