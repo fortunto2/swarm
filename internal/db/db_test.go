@@ -352,3 +352,37 @@ func TestMigrationKeepsAttemptsWhenWideningOutcome(t *testing.T) {
 		t.Fatalf("restart outcome refused: %v", err)
 	}
 }
+
+// The harness reconciles its registry from this list, so a task names the topic its run
+// serves and, once merged, its commit; a run without a topic says nothing.
+func TestRecentTasksCarryTopicAndCommit(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "swarm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	id := seed(t, d, "merged")
+	plain := seed(t, d, "ready")
+	run, err := d.CreateRun(ctx, "", "brain#2", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `UPDATE tasks SET run_id=?, result_commit='abc123' WHERE id=?`, run, id); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := d.RecentTasks(ctx, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]TaskRow{}
+	for _, r := range rows {
+		got[r.ID] = r
+	}
+	if got[id].Topic != "brain#2" || got[id].Commit != "abc123" {
+		t.Fatalf("task of a topic run: %+v, want topic brain#2, commit abc123", got[id])
+	}
+	if got[plain].Topic != "" || got[plain].Commit != "" {
+		t.Fatalf("task without a topic: %+v", got[plain])
+	}
+}

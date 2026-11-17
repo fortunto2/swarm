@@ -269,13 +269,16 @@ type TaskRow struct {
 	Provider string `json:"provider,omitempty"`
 	Node     string `json:"node,omitempty"`    // where its last attempt ran
 	RunsOn   string `json:"runs_on,omitempty"` // labels it asked for, comma-separated
+	Topic    string `json:"topic,omitempty"`   // the harness topic its run serves (task add --topic)
+	Commit   string `json:"commit,omitempty"`  // what it delivered, once merged
 }
 
 // RecentTasks: newest first, at most limit, optionally one status.
 func (d *DB) RecentTasks(ctx context.Context, status string, limit int) ([]TaskRow, error) {
 	rows, err := d.QueryContext(ctx, `SELECT id, run_id, repo, title, status, attempts,
 		(SELECT count(*) FROM attempts a WHERE a.task_id = tasks.id), coalesce(provider,''),
-		coalesce(node,''), coalesce(runs_on,'')
+		coalesce(node,''), coalesce(runs_on,''),
+		coalesce((SELECT topic FROM runs WHERE runs.id = tasks.run_id),''), coalesce(result_commit,'')
 		FROM tasks WHERE ?='' OR status=? ORDER BY id DESC LIMIT ?`, status, status, limit)
 	if err != nil {
 		return nil, err
@@ -284,7 +287,7 @@ func (d *DB) RecentTasks(ctx context.Context, status string, limit int) ([]TaskR
 	var out []TaskRow
 	for rows.Next() {
 		var r TaskRow
-		if err := rows.Scan(&r.ID, &r.Run, &r.Repo, &r.Title, &r.Status, &r.Attempts, &r.Tries, &r.Provider, &r.Node, &r.RunsOn); err != nil {
+		if err := rows.Scan(&r.ID, &r.Run, &r.Repo, &r.Title, &r.Status, &r.Attempts, &r.Tries, &r.Provider, &r.Node, &r.RunsOn, &r.Topic, &r.Commit); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
