@@ -129,6 +129,14 @@ guarded in the same UPDATE by the status the writer expected, so a late failure 
 overwrite a submission that arrived first. Workers run `swarm gate` before submitting: the
 same static checks and gate commands the daemon will run.
 
+### For a harness that keeps its own registry
+
+`swarm task add --topic <id>[#n]` (or `swarm_add_task` with `topic`) ties a task to the
+harness topic it serves. The `on_status` hook gets `{topic}` and `{commit}` as placeholders,
+and `swarm task list --json -n 500` rows carry `topic` and `commit` (set once merged).
+Use both: the hook is the edge (fast), the list is the level-triggered reconcile
+(correct), because a hook can be lost (15 s timeout, a daemon restart).
+
 ## Profile
 
 `configs/swarm.example.toml` is the full reference (`configs/node.example.toml` for a machine that dials in). The parts that matter:
