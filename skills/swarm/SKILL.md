@@ -39,7 +39,9 @@ prints the commit a binary was built from.
 ## 0. Two ways in
 
 - **MCP (preferred inside a session):** tools `swarm_status`, `swarm_add_task`,
-  `swarm_list_tasks`, `swarm_task_notes`, after `claude mcp add swarm -- swarm mcp --profile <dir>`.
+  `swarm_list_tasks`, `swarm_task_notes`, and for a blocked or stuck task `swarm_retry_task`,
+  `swarm_cancel_task`, `swarm_claim_files`; `swarm_run_job` starts a scheduled job now. After
+  `claude mcp add swarm -- swarm mcp --profile <dir>`.
   Subagents and teammates have them too, so a planning fan-out can queue tasks directly.
   They need a running `swarm daemon` for the profile.
 - **CLI:** the commands below. Same rules either way.
@@ -72,6 +74,10 @@ fail the wall clock. For each:
 - `--needs`: ids of tasks that must merge first (it waits as draft). Use it instead of
   hoping two tasks run in the right order. Under `merge = "branch"` the task starts on main
   plus its dependencies' deliveries, and its own delivery carries them: land them together.
+- `--topic`: the id of the work item this task serves in your own tracker (`<id>` or
+  `<id>#<n>`). The coordinator's `on_status` hook gets it as `{topic}` (and `{commit}` once
+  merged), and `swarm task list --json` rows carry both, so a tracker can follow its tasks:
+  the hook for speed, the list as an idempotent reconcile for the hooks that were lost.
 - `--runs-on`: node labels the machine must have, when the work needs what only some
   machines have (`vpc` for a private database, `gpu`). Leave it out otherwise: any machine
   with a free account takes it, and that is what spreads the work.
