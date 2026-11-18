@@ -11,6 +11,8 @@ silently never reaches `main`. Several machines share one queue (nodes), an acco
 limits and budget pause it, and an upgrade drains instead of killing work. The lead (task
 trees from a spec), more provider kinds and the container sandbox are next (see *Roadmap*).
 
+Write-up: [swarm: coding agents on my own subscriptions, and a gate that decides what is done](https://rustman.org/projects/project-swarm/)
+
 ## Why
 
 A single agent session is limited by one context and one rate limit. Ten sessions on one
